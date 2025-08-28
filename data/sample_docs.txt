@@ -1,0 +1,3 @@
+A LangChain é um framework para construir aplicações com LLMs.
+FAISS é uma biblioteca de busca vetorial eficiente.
+RAG (Retrieval-Augmented Generation) combina recuperação de contexto com geração por LLM.
