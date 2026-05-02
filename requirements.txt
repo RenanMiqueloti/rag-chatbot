@@ -1,7 +1,12 @@
-langchain>=0.2.10
-langchain-openai>=0.1.7
-langchain-community>=0.2.10
-faiss-cpu>=1.7.4
-tiktoken>=0.7.0
-python-dotenv>=1.0.1
-openai>=1.33.0
+# LangChain 0.3+ (LCEL — sem RetrievalQA deprecated)
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-community>=0.3.0
+langchain-text-splitters>=0.3.0
+langchain-openai>=0.3.0
+
+# Vetores
+faiss-cpu>=1.8.0
+
+# Variáveis de ambiente
+python-dotenv>=1.1.0

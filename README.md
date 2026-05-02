@@ -1,38 +1,22 @@
 # rag-chatbot
 
-Chatbot de linha de comando com fluxo de RAG construido com LangChain, FAISS e modelos da OpenAI. O projeto indexa um arquivo de texto local, gera embeddings e responde perguntas com base no contexto recuperado.
+Chatbot CLI com RAG usando LangChain 0.3+ (LCEL), FAISS e OpenAI.
 
-## O que o projeto faz
+Indexa um arquivo `.txt` local, gera embeddings e responde perguntas usando apenas o contexto recuperado — sem `RetrievalQA` deprecated.
 
-- carrega um documento local em `data/sample_docs.txt`
-- divide o texto em chunks
-- gera embeddings com OpenAI
-- monta um indice vetorial FAISS
-- responde perguntas usando `RetrievalQA`
+## Pipeline
+
+```
+TextLoader → RecursiveCharacterTextSplitter → OpenAIEmbeddings (text-embedding-3-small)
+→ FAISS → retriever (top-3) → ChatPromptTemplate → gpt-4o-mini → StrOutputParser
+```
 
 ## Stack
 
-- Python
-- LangChain
-- OpenAI
-- FAISS
-- python-dotenv
-
-## Estrutura
-
-```text
-.
-|-- app.py
-|-- requirements.txt
-|-- .gitignore
-`-- data/
-    `-- sample_docs.txt
-```
-
-## Pre-requisitos
-
 - Python 3.10+
-- chave `OPENAI_API_KEY` em um arquivo `.env`
+- LangChain 0.3+ (LCEL)
+- OpenAI (`text-embedding-3-small` + `gpt-4o-mini`)
+- FAISS (índice vetorial local, CPU)
 
 ## Como executar
 
@@ -40,29 +24,23 @@ Chatbot de linha de comando com fluxo de RAG construido com LangChain, FAISS e m
 git clone https://github.com/RenanMiqueloti/rag-chatbot.git
 cd rag-chatbot
 python -m venv .venv
-.venv\Scripts\activate
+# Windows: .venv\Scripts\activate | Linux/Mac: source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Crie um arquivo `.env` com:
+Crie um `.env`:
 
 ```env
-OPENAI_API_KEY=sua_chave_aqui
+OPENAI_API_KEY=sk-...
 ```
-
-Depois rode:
 
 ```bash
 python app.py
 ```
 
-## Como usar
+## Tradeoffs e decisões
 
-1. O script constroi o indice vetorial ao iniciar.
-2. Digite perguntas no terminal.
-3. Use `sair`, `exit` ou `quit` para encerrar.
-
-## Observacoes
-
-- o documento indexado por padrao e `data/sample_docs.txt`
-- o projeto e propositalmente pequeno e serve como exemplo didatico de RAG em CLI
+- **LCEL sobre `RetrievalQA`**: `RetrievalQA.from_chain_type` foi substituído pelo pipeline `retriever | prompt | llm | parser` (LCEL) para alinhar com LangChain 0.3+ e eliminar warnings de deprecação.
+- **`text-embedding-3-small`**: melhor custo-benefício que `ada-002` para coleções pequenas.
+- **FAISS vs. Weaviate/pgvector**: FAISS é suficiente para demonstração local sem servidor. Em produção com grandes volumes, migrar para pgvector ou Weaviate.
+- **CLI vs. interface web**: mantido como CLI propositalmente — foco no pipeline, não na UI.
