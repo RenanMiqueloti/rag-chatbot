@@ -3,13 +3,17 @@
 Pipeline LangGraph:
   retrieve (BM25 + Semantic → RRF fusion)
       → rerank (cross-encoder via FlashRank)
-          → generate (gpt-4o-mini com contexto)
+          → generate (Claude ou GPT-4o-mini com contexto)
 
 Banco vetorial: Qdrant in-memory (sem servidor extra — troque por
 QdrantClient(url="http://localhost:6333") para ambiente de produção).
 
 Retrieval híbrido: Reciprocal Rank Fusion de BM25 e embeddings semânticos
 para cobertura de vocabulário exato + semântica.
+
+Observabilidade: LangSmith ativo quando LANGCHAIN_TRACING_V2=true no .env.
+
+Provider LLM: defina LLM_PROVIDER=anthropic (padrão: openai).
 """
 from __future__ import annotations
 
@@ -20,8 +24,8 @@ from dotenv import load_dotenv
 from langchain_community.document_loaders import TextLoader
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_qdrant import QdrantVectorStore
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langgraph.graph import END, START, StateGraph
@@ -29,6 +33,33 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
 
 load_dotenv()
+
+# ── LLM factory ───────────────────────────────────────────────────────────
+
+
+def build_llm(provider: str | None = None) -> BaseChatModel:
+    """Retorna o LLM configurado pelo env var LLM_PROVIDER.
+
+    Providers suportados:
+      - openai   → gpt-4o-mini  (requer OPENAI_API_KEY)
+      - anthropic → claude-3-5-haiku-20241022  (requer ANTHROPIC_API_KEY)
+
+    Padrão: openai.
+    """
+    provider = (provider or os.getenv("LLM_PROVIDER", "openai")).lower()
+
+    if provider == "anthropic":
+        from langchain_anthropic import ChatAnthropic  # noqa: PLC0415
+
+        return ChatAnthropic(
+            model="claude-3-5-haiku-20241022",  # type: ignore[call-arg]
+            temperature=0.2,
+        )
+
+    from langchain_openai import ChatOpenAI  # noqa: PLC0415
+
+    return ChatOpenAI(model="gpt-4o-mini", temperature=0.2)
+
 
 # ── State ─────────────────────────────────────────────────────────────────
 
@@ -54,6 +85,8 @@ def build_retrievers(
     Returns:
         Tupla (semantic_retriever, bm25_retriever).
     """
+    from langchain_openai import OpenAIEmbeddings  # noqa: PLC0415
+
     loader = TextLoader(path, encoding="utf-8")
     docs = loader.load()
     splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=100)
@@ -156,7 +189,7 @@ def rerank_node(state: RAGState) -> RAGState:
     return {**state, "reranked_docs": reranked}
 
 
-def make_generate_node(llm: ChatOpenAI):
+def make_generate_node(llm: BaseChatModel):
     """Cria o nó de geração: prompt com contexto re-rankeado → LLM."""
 
     def generate(state: RAGState) -> RAGState:
@@ -186,7 +219,7 @@ def build_rag_graph(data_path: str = "data/sample_docs.txt"):
         Grafo compilado pronto para invoke/stream.
     """
     semantic, bm25 = build_retrievers(data_path)
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2)
+    llm = build_llm()
 
     graph = StateGraph(RAGState)
     graph.add_node("retrieve", make_retrieve_node(semantic, bm25))
@@ -205,13 +238,24 @@ def build_rag_graph(data_path: str = "data/sample_docs.txt"):
 
 
 def main() -> None:
-    if not os.getenv("OPENAI_API_KEY"):
-        print("⚠️  Defina OPENAI_API_KEY no arquivo .env")
+    provider = os.getenv("LLM_PROVIDER", "openai")
+    required_key = "ANTHROPIC_API_KEY" if provider == "anthropic" else "OPENAI_API_KEY"
+
+    if not os.getenv(required_key):
+        print(f"⚠️  Defina {required_key} no arquivo .env")
         return
 
-    print("🔎 Indexando corpus (Qdrant in-memory + BM25)...")
+    tracing = os.getenv("LANGCHAIN_TRACING_V2", "false").lower() == "true"
+    provider_label = "Claude (Anthropic)" if provider == "anthropic" else "GPT-4o-mini (OpenAI)"
+
+    print(f"🔎 Indexando corpus (Qdrant in-memory + BM25)...")
+    print(f"🤖 Provider: {provider_label}")
+    if tracing:
+        project = os.getenv("LANGSMITH_PROJECT", "rag-chatbot")
+        print(f"📊 LangSmith tracing ativo — projeto: {project}")
+
     rag = build_rag_graph()
-    print("🤖 RAG chatbot pronto! Digite 'sair' para encerrar.\n")
+    print("✅ RAG chatbot pronto! Digite 'sair' para encerrar.\n")
 
     while True:
         query = input("Você: ").strip()

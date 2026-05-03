@@ -7,6 +7,9 @@ Endpoints:
     POST /query   — resposta completa (JSON)
     POST /stream  — streaming palavra a palavra (text/plain)
     GET  /health  — health check
+
+Provider LLM: defina LLM_PROVIDER=anthropic|openai no .env (padrão: openai).
+Observabilidade: defina LANGCHAIN_TRACING_V2=true + LANGSMITH_API_KEY no .env.
 """
 from __future__ import annotations
 
@@ -23,7 +26,7 @@ load_dotenv()
 app = FastAPI(
     title="RAG Chatbot API",
     description="Production RAG pipeline: hybrid retrieval → re-ranking → generation",
-    version="2.0.0",
+    version="2.1.0",
 )
 
 # Instanciado em startup para evitar cold-start no primeiro request
@@ -34,9 +37,17 @@ _rag_graph = None
 async def startup() -> None:
     """Indexa o corpus e compila o grafo na inicialização do servidor."""
     global _rag_graph
-    if not os.getenv("OPENAI_API_KEY"):
-        raise RuntimeError("OPENAI_API_KEY não definida. Configure o arquivo .env")
-    from app import build_rag_graph
+
+    provider = os.getenv("LLM_PROVIDER", "openai").lower()
+    required_key = "ANTHROPIC_API_KEY" if provider == "anthropic" else "OPENAI_API_KEY"
+
+    if not os.getenv(required_key):
+        raise RuntimeError(
+            f"{required_key} não definida. Configure o arquivo .env "
+            f"(LLM_PROVIDER={provider})"
+        )
+
+    from app import build_rag_graph  # noqa: PLC0415
 
     _rag_graph = await asyncio.to_thread(build_rag_graph)
 
@@ -64,7 +75,12 @@ class QueryResponse(BaseModel):
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok", "pipeline": "ready" if _rag_graph else "initializing"}
+    return {
+        "status": "ok",
+        "pipeline": "ready" if _rag_graph else "initializing",
+        "provider": os.getenv("LLM_PROVIDER", "openai"),
+        "tracing": os.getenv("LANGCHAIN_TRACING_V2", "false"),
+    }
 
 
 @app.post("/query", response_model=QueryResponse)

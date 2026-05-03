@@ -1,6 +1,6 @@
 # rag-chatbot
 
-Pipeline RAG de produção com **LangGraph**, **Qdrant**, **hybrid retrieval** e **cross-encoder re-ranking**.
+Pipeline RAG de produção com **LangGraph**, **Qdrant**, **hybrid retrieval**, **cross-encoder re-ranking** e **observabilidade via LangSmith**. Suporte a **Claude (Anthropic)** e **GPT-4o-mini (OpenAI)**.
 
 > Demo local autocontido — troque `QdrantClient(":memory:")` por `QdrantClient(url=...)` para produção.
 
@@ -13,7 +13,7 @@ graph LR
     A([Query]) --> B
     B["🔍 retrieve\nBM25 + Semantic\n→ RRF Fusion"] --> C
     C["⚡ rerank\nCross-encoder\nFlashRank"] --> D
-    D["🤖 generate\ngpt-4o-mini\ncom contexto"] --> E([Answer])
+    D["🤖 generate\nClaude / GPT-4o-mini\ncom contexto"] --> E([Answer])
 
     style B fill:#2d3748,color:#e2e8f0
     style C fill:#2d3748,color:#e2e8f0
@@ -24,7 +24,7 @@ graph LR
 |---|---|---|
 | **retrieve** | BM25 + semantic → Reciprocal Rank Fusion | Hybrid retrieval é o maior salto de qualidade em RAG 2026 |
 | **rerank** | Cross-encoder FlashRank, fallback gracioso | Reordena candidatos com contexto da query — menos alucinação |
-| **generate** | Prompt grounded + gpt-4o-mini | Responde apenas com o que está no contexto recuperado |
+| **generate** | Prompt grounded + Claude ou GPT-4o-mini | Responde apenas com o que está no contexto recuperado |
 
 ---
 
@@ -36,6 +36,8 @@ graph LR
 - **Reciprocal Rank Fusion** — fusão dos dois rankings sem parâmetros extras
 - **FlashRank** (opcional) — cross-encoder leve para re-ranking local
 - **FastAPI** — endpoint REST + streaming
+- **LangSmith** — tracing nativo LangGraph (node-by-node state diffs)
+- **Claude (Anthropic) / GPT-4o-mini** — provider configurável via `LLM_PROVIDER` env var
 - **LLM-as-judge evals** — avaliação automática de relevance, faithfulness, completeness
 
 ---
@@ -65,7 +67,7 @@ git clone https://github.com/RenanMiqueloti/rag-chatbot.git
 cd rag-chatbot
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env   # adicione OPENAI_API_KEY
+cp .env.example .env   # configure LLM_PROVIDER, API keys e LangSmith
 ```
 
 **CLI:**
@@ -84,6 +86,35 @@ uvicorn api:app --reload
 ```bash
 python -m evals.evaluate
 ```
+
+---
+
+## Providers LLM
+
+Configure `LLM_PROVIDER` no `.env`:
+
+| Provider | Modelo | Env var necessária |
+|---|---|---|
+| `openai` (padrão) | gpt-4o-mini | `OPENAI_API_KEY` |
+| `anthropic` | claude-3-5-haiku-20241022 | `ANTHROPIC_API_KEY` |
+
+---
+
+## Observabilidade — LangSmith
+
+Configure no `.env`:
+
+```env
+LANGCHAIN_TRACING_V2=true
+LANGSMITH_API_KEY=lsv2_...
+LANGSMITH_PROJECT=rag-chatbot
+```
+
+Com tracing ativo, cada execução do pipeline registra no LangSmith:
+- Inputs e outputs de cada nó (retrieve → rerank → generate)
+- Documentos recuperados e re-rankeados
+- Prompt final enviado ao LLM
+- Latência por nó
 
 ---
 
@@ -121,6 +152,9 @@ FAISS não tem servidor, não tem filtros, não escala horizontalmente. Qdrant r
 
 **Por que BM25 + semântico?**
 Modelos de embedding não capturam vocabulário exato (siglas, nomes próprios, IDs). BM25 captura. A fusão via RRF cobre os dois casos sem tuning de pesos.
+
+**Por que LangSmith e não logging manual?**
+LangSmith tem integração nativa com LangGraph: cada nó do grafo vira um span rastreado automaticamente com state diffs, sem instrumentação extra. Em 2026, 89% das orgs têm observabilidade de agentes — LangSmith é o padrão para stacks LangGraph.
 
 **Por que LLM-as-judge?**
 Métricas clássicas como ROUGE e BLEU não capturam faithfulness (ausência de alucinação). LLM-as-judge com prompts estruturados é o padrão emergente em 2026 para avaliar pipelines RAG.
