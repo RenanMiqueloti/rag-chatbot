@@ -1,12 +1,34 @@
-# LangChain 0.3+ (LCEL — sem RetrievalQA deprecated)
-langchain>=0.3.0
+# LangChain — núcleo e integrações (v0.3+ LCEL)
+langchain>=0.3.20
 langchain-core>=0.3.0
-langchain-community>=0.3.0
-langchain-text-splitters>=0.3.0
 langchain-openai>=0.3.0
+langchain-community>=0.3.20
+langchain-text-splitters>=0.3.0
+langchain-qdrant>=0.2.0
 
-# Vetores
-faiss-cpu>=1.8.0
+# LangGraph — orquestração do pipeline RAG
+langgraph>=0.4.0
 
-# Variáveis de ambiente
+# Vector store — Qdrant in-memory (sem servidor extra em dev)
+# Em produção: QdrantClient(url="http://localhost:6333")
+qdrant-client>=1.12.0
+
+# Hybrid retrieval — BM25 keyword search
+rank-bm25>=0.2.2
+
+# Re-ranking — cross-encoder (opcional; fallback gracioso se ausente)
+# pip install flashrank
+# flashrank>=0.2.9
+
+# API REST com streaming
+fastapi>=0.115.0
+uvicorn>=0.30.0
+
+# Observabilidade — descomente o que usar
+# langsmith>=0.1.0
+# langfuse>=2.0.0
+
+# Utilitários
+tiktoken>=0.9.0
 python-dotenv>=1.1.0
+openai>=1.60.0

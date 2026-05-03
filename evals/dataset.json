@@ -1,0 +1,27 @@
+[
+  {
+    "id": "q001",
+    "question": "What is the main topic covered in the documents?",
+    "expected_themes": "The answer should reflect the primary subject matter of the indexed corpus."
+  },
+  {
+    "id": "q002",
+    "question": "Can you summarize the key points from the documentation?",
+    "expected_themes": "A concise summary hitting the main ideas without hallucinating facts not in the corpus."
+  },
+  {
+    "id": "q003",
+    "question": "What specific details or facts are mentioned?",
+    "expected_themes": "Concrete, verifiable details that exist verbatim or implicitly in the source documents."
+  },
+  {
+    "id": "q004",
+    "question": "Are there any recommendations or conclusions stated?",
+    "expected_themes": "Actionable guidance or conclusions drawn from the documents, if present."
+  },
+  {
+    "id": "q005",
+    "question": "What information is NOT available in the documents?",
+    "expected_themes": "The model should correctly identify gaps and say it does not know rather than hallucinate."
+  }
+]
