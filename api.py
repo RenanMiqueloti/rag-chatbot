@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -23,18 +24,12 @@ from pydantic import BaseModel
 
 load_dotenv()
 
-app = FastAPI(
-    title="RAG Chatbot API",
-    description="Production RAG pipeline: hybrid retrieval → re-ranking → generation",
-    version="2.1.0",
-)
-
 # Instanciado em startup para evitar cold-start no primeiro request
 _rag_graph = None
 
 
-@app.on_event("startup")
-async def startup() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     """Indexa o corpus e compila o grafo na inicialização do servidor."""
     global _rag_graph
 
@@ -50,6 +45,15 @@ async def startup() -> None:
     from app import build_rag_graph  # noqa: PLC0415
 
     _rag_graph = await asyncio.to_thread(build_rag_graph)
+    yield
+
+
+app = FastAPI(
+    title="RAG Chatbot API",
+    description="Production RAG pipeline: hybrid retrieval → re-ranking → generation",
+    version="2.1.0",
+    lifespan=lifespan,
+)
 
 
 def _get_graph():
