@@ -1,0 +1,57 @@
+[project]
+name = "rag-chatbot"
+version = "0.1.0"
+description = "RAG de produção: LangGraph + Qdrant + hybrid BM25/dense + RRF + cross-encoder re-rank + FastAPI streaming + LangSmith"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "Renan Miqueloti", email = "renanmiqueloti@gmail.com" }]
+keywords = ["rag", "langgraph", "qdrant", "bm25", "cross-encoder", "fastapi", "langsmith"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Framework :: FastAPI",
+]
+
+[project.urls]
+Homepage = "https://github.com/RenanMiqueloti/rag-chatbot"
+Issues = "https://github.com/RenanMiqueloti/rag-chatbot/issues"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["api", "app"]
+
+[tool.setuptools.packages.find]
+include = ["evals*"]
+exclude = ["tests*", "data*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+# RUF002/RUF003: ambiguous unicode chars in docstrings (en-dash, em-dash) are
+# intentional in pt-BR copy. E501: line length is enforced by the formatter.
+ignore = ["E501", "RUF002", "RUF003"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+addopts = "-ra --strict-markers"
+
+[tool.mypy]
+python_version = "3.12"
+warn_unused_configs = true
+ignore_missing_imports = true

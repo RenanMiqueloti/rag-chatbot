@@ -1,5 +1,9 @@
 # rag-chatbot
 
+![CI](https://github.com/RenanMiqueloti/rag-chatbot/actions/workflows/ci.yml/badge.svg)
+![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
+![Python](https://img.shields.io/badge/python-3.12-blue.svg)
+
 Pipeline RAG de produção com **LangGraph**, **Qdrant**, **hybrid retrieval**, **cross-encoder re-ranking** e **observabilidade via LangSmith**. Suporte a **Claude (Anthropic)** e **GPT-4o-mini (OpenAI)**.
 
 > Demo local autocontido — troque `QdrantClient(":memory:")` por `QdrantClient(url=...)` para produção.
@@ -139,6 +143,48 @@ client = QdrantClient(":memory:")
 # Depois (produção):
 client = QdrantClient(url="http://localhost:6333", api_key=os.getenv("QDRANT_API_KEY"))
 ```
+
+---
+
+## Production deployment
+
+O repositório inclui `Dockerfile` + `docker-compose.yml` para subir o serviço com Qdrant, PostgreSQL e Redis em uma única linha.
+
+### Subir o stack
+
+```bash
+cp .env.example .env       # preencha OPENAI_API_KEY (ou ANTHROPIC_API_KEY)
+docker compose up -d --build
+```
+
+### Serviços
+
+| Serviço | URL | Volume |
+|---|---|---|
+| API (FastAPI) | http://localhost:8000 | — |
+| Qdrant (REST + gRPC) | http://localhost:6333 / :6334 | `qdrant_data` |
+| PostgreSQL | localhost:5432 (`rag/rag/rag`) | `postgres_data` |
+| Redis | localhost:6379 | `redis_data` |
+
+A API tem `HEALTHCHECK` em `GET /health` (intervalo 30s, timeout 5s, 3 retries).
+
+### Encerrar e limpar volumes
+
+```bash
+docker compose down            # mantém volumes (estado persiste)
+docker compose down -v         # apaga volumes (reset completo)
+```
+
+### Rodar só o serviço de API (sem Qdrant/PG/Redis)
+
+```bash
+docker build -t rag-chatbot:local .
+docker run --rm -p 8000:8000 \
+  -e OPENAI_API_KEY=$OPENAI_API_KEY \
+  rag-chatbot:local
+```
+
+Nesse modo o pipeline cai no `QdrantClient(":memory:")` e funciona standalone.
 
 ---
 
