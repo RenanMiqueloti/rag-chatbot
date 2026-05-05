@@ -13,6 +13,7 @@ Variáveis opcionais (observabilidade):
     LANGSMITH_API_KEY + LANGCHAIN_TRACING_V2=true — envia traces ao LangSmith
     LANGFUSE_SECRET_KEY + LANGFUSE_PUBLIC_KEY     — envia traces ao Langfuse
 """
+
 from __future__ import annotations
 
 import json
@@ -61,9 +62,7 @@ def llm_as_judge(
     """
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
-    expected_section = (
-        f"\nExpected themes: {expected_themes}" if expected_themes else ""
-    )
+    expected_section = f"\nExpected themes: {expected_themes}" if expected_themes else ""
 
     prompt = f"""You are an expert evaluator for RAG (Retrieval-Augmented Generation) systems.
 Rate the following answer on three dimensions using a 1-5 integer scale.
