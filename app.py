@@ -15,6 +15,7 @@ Observabilidade: LangSmith ativo quando LANGCHAIN_TRACING_V2=true no .env.
 
 Provider LLM: defina LLM_PROVIDER=anthropic (padrão: openai).
 """
+
 from __future__ import annotations
 
 import os
@@ -30,7 +31,6 @@ from langchain_qdrant import QdrantVectorStore
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langgraph.graph import END, START, StateGraph
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams
 
 load_dotenv()
 
@@ -49,14 +49,14 @@ def build_llm(provider: str | None = None) -> BaseChatModel:
     provider = (provider or os.getenv("LLM_PROVIDER", "openai")).lower()
 
     if provider == "anthropic":
-        from langchain_anthropic import ChatAnthropic  # noqa: PLC0415
+        from langchain_anthropic import ChatAnthropic
 
         return ChatAnthropic(
             model="claude-3-5-haiku-20241022",  # type: ignore[call-arg]
             temperature=0.2,
         )
 
-    from langchain_openai import ChatOpenAI  # noqa: PLC0415
+    from langchain_openai import ChatOpenAI
 
     return ChatOpenAI(model="gpt-4o-mini", temperature=0.2)
 
@@ -85,7 +85,7 @@ def build_retrievers(
     Returns:
         Tupla (semantic_retriever, bm25_retriever).
     """
-    from langchain_openai import OpenAIEmbeddings  # noqa: PLC0415
+    from langchain_openai import OpenAIEmbeddings
 
     loader = TextLoader(path, encoding="utf-8")
     docs = loader.load()
@@ -154,7 +154,7 @@ def rerank(query: str, docs: list[Document], top_n: int = 3) -> list[Document]:
         Top N documentos re-rankeados.
     """
     try:
-        from flashrank import RerankRequest, Ranker  # type: ignore[import]
+        from flashrank import Ranker, RerankRequest  # type: ignore[import]
 
         ranker = Ranker(model_name="ms-marco-MiniLM-L-12-v2", cache_dir="/tmp")
         passages = [{"id": i, "text": d.page_content} for i, d in enumerate(docs)]
@@ -248,7 +248,7 @@ def main() -> None:
     tracing = os.getenv("LANGCHAIN_TRACING_V2", "false").lower() == "true"
     provider_label = "Claude (Anthropic)" if provider == "anthropic" else "GPT-4o-mini (OpenAI)"
 
-    print(f"🔎 Indexando corpus (Qdrant in-memory + BM25)...")
+    print("🔎 Indexando corpus (Qdrant in-memory + BM25)...")
     print(f"🤖 Provider: {provider_label}")
     if tracing:
         project = os.getenv("LANGSMITH_PROJECT", "rag-chatbot")
