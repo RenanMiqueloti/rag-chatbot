@@ -11,6 +11,7 @@ Endpoints:
 Provider LLM: defina LLM_PROVIDER=anthropic|openai no .env (padrão: openai).
 Observabilidade: defina LANGCHAIN_TRACING_V2=true + LANGSMITH_API_KEY no .env.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -38,11 +39,10 @@ async def lifespan(app: FastAPI):
 
     if not os.getenv(required_key):
         raise RuntimeError(
-            f"{required_key} não definida. Configure o arquivo .env "
-            f"(LLM_PROVIDER={provider})"
+            f"{required_key} não definida. Configure o arquivo .env (LLM_PROVIDER={provider})"
         )
 
-    from app import build_rag_graph  # noqa: PLC0415
+    from app import build_rag_graph
 
     _rag_graph = await asyncio.to_thread(build_rag_graph)
     yield
