@@ -17,7 +17,7 @@ graph LR
     A([Query]) --> B
     B["🔍 retrieve\nBM25 + Semantic\n→ RRF Fusion"] --> C
     C["⚡ rerank\nCross-encoder\nFlashRank"] --> D
-    D["🤖 generate\nClaude / GPT-4o-mini\ncom contexto"] --> E([Answer])
+    D["generate\nClaude / GPT-4o-mini\ncom contexto"] --> E([Answer])
 
     style B fill:#2d3748,color:#e2e8f0
     style C fill:#2d3748,color:#e2e8f0
