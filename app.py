@@ -1,4 +1,4 @@
-"""RAG Chatbot — produção-grade com LangGraph, hybrid retrieval e re-ranking.
+"""RAG Chatbot com LangGraph, hybrid retrieval e re-ranking.
 
 Pipeline LangGraph:
   retrieve (BM25 + Semantic → RRF fusion)
