@@ -249,7 +249,7 @@ def main() -> None:
     provider_label = "Claude (Anthropic)" if provider == "anthropic" else "GPT-4o-mini (OpenAI)"
 
     print("🔎 Indexando corpus (Qdrant in-memory + BM25)...")
-    print(f"🤖 Provider: {provider_label}")
+    print(f"Provider: {provider_label}")
     if tracing:
         project = os.getenv("LANGSMITH_PROJECT", "rag-chatbot")
         print(f"📊 LangSmith tracing ativo — projeto: {project}")
