@@ -4,9 +4,9 @@
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.12-blue.svg)
 
-Pipeline RAG de produção com **LangGraph**, **Qdrant**, **hybrid retrieval**, **cross-encoder re-ranking** e **observabilidade via LangSmith**. Suporte a **Claude (Anthropic)** e **GPT-4o-mini (OpenAI)**.
+Pipeline RAG com LangGraph, Qdrant, hybrid retrieval (BM25 + dense + RRF), re-ranking via cross-encoder e tracing via LangSmith. Suporta Claude (Anthropic) e GPT-4o-mini (OpenAI).
 
-> Demo local autocontido — troque `QdrantClient(":memory:")` por `QdrantClient(url=...)` para produção.
+> Demo local autocontido — troque `QdrantClient(":memory:")` por `QdrantClient(url=...)` para um deploy real.
 
 ---
 
@@ -15,8 +15,8 @@ Pipeline RAG de produção com **LangGraph**, **Qdrant**, **hybrid retrieval**, 
 ```mermaid
 graph LR
     A([Query]) --> B
-    B["🔍 retrieve\nBM25 + Semantic\n→ RRF Fusion"] --> C
-    C["⚡ rerank\nCross-encoder\nFlashRank"] --> D
+    B["retrieve\nBM25 + Semantic\nRRF Fusion"] --> C
+    C["rerank\nCross-encoder\nFlashRank"] --> D
     D["generate\nClaude / GPT-4o-mini\ncom contexto"] --> E([Answer])
 
     style B fill:#2d3748,color:#e2e8f0
@@ -26,7 +26,7 @@ graph LR
 
 | Nó | O que faz | Por que importa |
 |---|---|---|
-| **retrieve** | BM25 + semantic → Reciprocal Rank Fusion | Hybrid retrieval é o maior salto de qualidade em RAG 2026 |
+| **retrieve** | BM25 + semantic → Reciprocal Rank Fusion | Cobre tanto vocabulário exato (siglas, IDs) quanto similaridade semântica |
 | **rerank** | Cross-encoder FlashRank, fallback gracioso | Reordena candidatos com contexto da query — menos alucinação |
 | **generate** | Prompt grounded + Claude ou GPT-4o-mini | Responde apenas com o que está no contexto recuperado |
 
@@ -35,7 +35,7 @@ graph LR
 ## Stack
 
 - **LangGraph** 0.4+ — orquestração do pipeline como grafo de estado
-- **Qdrant** (in-memory) — banco vetorial; substitua por instância real em produção
+- **Qdrant** (in-memory) — banco vetorial; substitua por instância dedicada num deploy real
 - **BM25** via `rank-bm25` — retrieval por vocabulário exato
 - **Reciprocal Rank Fusion** — fusão dos dois rankings sem parâmetros extras
 - **FlashRank** (opcional) — cross-encoder leve para re-ranking local
@@ -132,7 +132,7 @@ Sem FlashRank instalado o pipeline funciona normalmente — o nó `rerank` retor
 
 ---
 
-## Migrar para Qdrant servidor (produção)
+## Migrar para Qdrant servidor (deploy real)
 
 Em `app.py`, troque:
 
@@ -140,15 +140,15 @@ Em `app.py`, troque:
 # Antes (in-memory / dev):
 client = QdrantClient(":memory:")
 
-# Depois (produção):
+# Depois (deploy real):
 client = QdrantClient(url="http://localhost:6333", api_key=os.getenv("QDRANT_API_KEY"))
 ```
 
 ---
 
-## Production deployment
+## Deploy completo (Docker Compose)
 
-O repositório inclui `Dockerfile` + `docker-compose.yml` para subir o serviço com Qdrant, PostgreSQL e Redis em uma única linha.
+O repositório inclui `Dockerfile` + `docker-compose.yml` pra subir o serviço com Qdrant, PostgreSQL e Redis numa só linha.
 
 ### Subir o stack
 
@@ -200,7 +200,7 @@ FAISS não tem servidor, não tem filtros, não escala horizontalmente. Qdrant r
 Modelos de embedding não capturam vocabulário exato (siglas, nomes próprios, IDs). BM25 captura. A fusão via RRF cobre os dois casos sem tuning de pesos.
 
 **Por que LangSmith e não logging manual?**
-LangSmith tem integração nativa com LangGraph: cada nó do grafo vira um span rastreado automaticamente com state diffs, sem instrumentação extra. Em 2026, 89% das orgs têm observabilidade de agentes — LangSmith é o padrão para stacks LangGraph.
+LangSmith tem integração nativa com LangGraph: cada nó do grafo vira um span rastreado automaticamente, com state diffs e latência por nó, sem instrumentação extra no código.
 
 **Por que LLM-as-judge?**
-Métricas clássicas como ROUGE e BLEU não capturam faithfulness (ausência de alucinação). LLM-as-judge com prompts estruturados é o padrão emergente em 2026 para avaliar pipelines RAG.
+Métricas clássicas como ROUGE e BLEU não capturam faithfulness (resposta grounded no contexto recuperado). LLM-as-judge com prompts estruturados serve como aproximação razoável quando não há ground truth de fact-checking.
