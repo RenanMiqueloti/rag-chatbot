@@ -22,19 +22,18 @@ sentence-transformers>=3.0.0
 # Hybrid retrieval — BM25 keyword search
 rank-bm25>=0.2.2
 
-# PDF loader (PyMuPDFLoader)
-pymupdf>=1.24
+# PDF loader (PyPDFLoader — pypdf é BSD; pymupdf seria AGPL)
+pypdf>=4.0
 
-# Re-ranking — cross-encoder (opcional; fallback gracioso se ausente)
-# pip install flashrank
-# flashrank>=0.2.9
+# Re-ranking — cross-encoder via FlashRank
+flashrank>=0.2.9
 
 # API REST com streaming
 fastapi>=0.115.0
 uvicorn>=0.30.0
 
 # Demo Gradio (Hugging Face Spaces) — gradio 6+ usa messages-format por padrão
-gradio>=6.0.0
+gradio>=6.0,<7.0
 
 # Observabilidade — LangSmith (integração nativa LangGraph)
 langsmith>=0.1.0

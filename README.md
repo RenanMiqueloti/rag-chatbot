@@ -68,7 +68,8 @@ rag-chatbot/
 │   ├── evaluate.py    # Harness de evals com LLM-as-judge
 │   └── dataset.json   # Dataset de perguntas para regressão
 ├── data/
-│   └── sample_docs.txt
+│   ├── sample_docs.txt
+│   └── example.md     # primer sobre RAG — bom corpus de partida pra demo
 ├── .env.example
 ├── requirements.txt
 └── LICENSE
@@ -112,8 +113,12 @@ Demo Gradio rodando em Hugging Face Spaces — URL será publicada após o deplo
 Limitações da demo:
 
 - 3 arquivos por sessão, até 5 MB cada (`.txt`, `.md`, `.pdf`)
-- 30 perguntas por sessão
+- 30 perguntas por sessão (acumulado — não reseta ao re-upload)
+- 3 indexações por sessão
 - Documentos não são persistidos entre sessões ou restarts do Space
+
+Sem corpus próprio? `data/example.md` neste repo é um primer curto sobre RAG e
+serve como ponto de partida — baixe e suba na demo.
 
 ---
 
@@ -147,27 +152,26 @@ Com tracing ativo, cada execução do pipeline registra no LangSmith:
 
 ---
 
-## Re-ranking opcional (FlashRank)
+## Re-ranking (FlashRank)
 
-```bash
-pip install flashrank
-```
-
-Sem FlashRank instalado o pipeline funciona normalmente — o nó `rerank` retorna os top-3 por score RRF.
+`flashrank` já vem em `requirements.txt`. Se você remover, o nó `rerank` cai
+num fallback que apenas trunca os top-3 do RRF — o pipeline continua funcionando,
+mas sem cross-encoder reordenando.
 
 ---
 
-## Migrar para Qdrant servidor (deploy real)
+## Qdrant servidor (deploy real)
 
-Em `app.py`, troque:
+Sem `QDRANT_URL` definido, o pipeline cai em in-memory (sem persistência).
+Pra apontar para um Qdrant rodando, configure no `.env`:
 
-```python
-# Antes (in-memory / dev):
-client = QdrantClient(":memory:")
-
-# Depois (deploy real):
-client = QdrantClient(url="http://localhost:6333", api_key=os.getenv("QDRANT_API_KEY"))
+```env
+QDRANT_URL=http://localhost:6333
+# QDRANT_API_KEY=...   # se a instância exigir auth
 ```
+
+A função `build_retrievers(documents, qdrant_url=...)` também aceita override
+explícito (`""` força in-memory mesmo com env definido — usado pela demo Gradio).
 
 ---
 

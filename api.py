@@ -113,7 +113,7 @@ def _initial_state(query: str) -> dict:
 async def query_endpoint(request: QueryRequest) -> QueryResponse:
     """Resposta completa em JSON, com fontes numeradas."""
     rag = _get_graph()
-    result = await asyncio.to_thread(rag.invoke, _initial_state(request.query))
+    result = await rag.ainvoke(_initial_state(request.query))
     sources = [Source(**s) for s in result.get("sources_struct", [])]
     return QueryResponse(answer=result["answer"], sources=sources)
 

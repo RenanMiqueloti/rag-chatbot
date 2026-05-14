@@ -106,14 +106,14 @@ def load_documents_from_files(paths: list[str | Path]) -> list[Document]:
     Returns:
         Lista de Documents prontos pra ``build_retrievers``.
     """
-    from langchain_community.document_loaders import PyMuPDFLoader, TextLoader
+    from langchain_community.document_loaders import PyPDFLoader, TextLoader
 
     documents: list[Document] = []
     for raw in paths:
         path = Path(raw)
         suffix = path.suffix.lower()
         if suffix == ".pdf":
-            documents.extend(PyMuPDFLoader(str(path)).load())
+            documents.extend(PyPDFLoader(str(path)).load())
         elif suffix in {".txt", ".md"}:
             documents.extend(TextLoader(str(path), encoding="utf-8").load())
         else:
@@ -127,12 +127,15 @@ def load_documents_from_files(paths: list[str | Path]) -> list[Document]:
 def build_retrievers(
     documents: list[Document],
     collection_name: str = "docs",
+    qdrant_url: str | None = None,
 ) -> tuple[object, BM25Retriever]:
     """Constrói o retriever semântico (Qdrant) e o BM25 a partir dos documentos.
 
     Args:
         documents: Documentos já carregados (use ``load_documents_from_files``).
         collection_name: Nome da coleção Qdrant — útil pra isolar sessões.
+        qdrant_url: URL do Qdrant. ``None`` (default) lê ``QDRANT_URL`` do env;
+            string vazia força in-memory; URL explícito conecta ao servidor.
 
     Returns:
         Tupla (semantic_retriever, bm25_retriever).
@@ -145,12 +148,25 @@ def build_retrievers(
     # Local embeddings keep the demo free of per-query API cost.
     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
-    vectorstore = QdrantVectorStore.from_documents(
-        chunks,
-        embedding=embeddings,
-        location=":memory:",
-        collection_name=collection_name,
-    )
+    effective_url = qdrant_url
+    if effective_url is None:
+        effective_url = os.getenv("QDRANT_URL", "").strip()
+
+    if effective_url:
+        vectorstore = QdrantVectorStore.from_documents(
+            chunks,
+            embedding=embeddings,
+            url=effective_url,
+            api_key=os.getenv("QDRANT_API_KEY") or None,
+            collection_name=collection_name,
+        )
+    else:
+        vectorstore = QdrantVectorStore.from_documents(
+            chunks,
+            embedding=embeddings,
+            location=":memory:",
+            collection_name=collection_name,
+        )
     semantic_retriever = vectorstore.as_retriever(search_kwargs={"k": 6})
 
     bm25 = BM25Retriever.from_documents(chunks)
@@ -200,7 +216,8 @@ def rerank(query: str, docs: list[Document], top_n: int = 3) -> list[tuple[Docum
     try:
         from flashrank import Ranker, RerankRequest  # type: ignore[import]
 
-        ranker = Ranker(model_name="ms-marco-MiniLM-L-12-v2", cache_dir="/tmp")
+        cache_dir = os.getenv("FLASHRANK_CACHE_DIR", "/tmp")
+        ranker = Ranker(model_name="ms-marco-MiniLM-L-12-v2", cache_dir=cache_dir)
         passages = [{"id": i, "text": d.page_content} for i, d in enumerate(docs)]
         request = RerankRequest(query=query, passages=passages)
         results = ranker.rerank(request)
@@ -264,7 +281,7 @@ def rerank_node(state: RAGState) -> RAGState:
 def make_generate_node(llm: BaseChatModel):
     """Cria o nó de geração: prompt com contexto re-rankeado e numerado → LLM."""
 
-    def generate(state: RAGState) -> RAGState:
+    async def generate(state: RAGState) -> RAGState:
         t0 = time.perf_counter()
         query = state["query"]
         numbered = "\n\n".join(
@@ -278,7 +295,7 @@ def make_generate_node(llm: BaseChatModel):
             f"Context:\n{numbered}\n\n"
             f"Question: {query}"
         )
-        response = llm.invoke([HumanMessage(content=prompt)])
+        response = await llm.ainvoke([HumanMessage(content=prompt)])
         dt_ms = (time.perf_counter() - t0) * 1000
         answer = response.content
         logger.info(
@@ -296,17 +313,25 @@ def make_generate_node(llm: BaseChatModel):
 # ── Graph factory ─────────────────────────────────────────────────────────
 
 
-def build_rag_graph(documents: list[Document], collection_name: str = "docs"):
+def build_rag_graph(
+    documents: list[Document],
+    collection_name: str = "docs",
+    qdrant_url: str | None = None,
+):
     """Constrói e compila o grafo LangGraph do pipeline RAG.
 
     Args:
         documents: Documentos já carregados (use ``load_documents_from_files``).
         collection_name: Nome da coleção Qdrant — útil pra isolar sessões.
+        qdrant_url: URL do Qdrant. ``None`` (default) lê ``QDRANT_URL`` do env;
+            string vazia força in-memory; URL explícito conecta ao servidor.
 
     Returns:
         Grafo compilado pronto para invoke/stream.
     """
-    semantic, bm25 = build_retrievers(documents, collection_name=collection_name)
+    semantic, bm25 = build_retrievers(
+        documents, collection_name=collection_name, qdrant_url=qdrant_url
+    )
     llm = build_llm()
 
     graph = StateGraph(RAGState)
@@ -341,7 +366,7 @@ def _provider_label(provider: str) -> str:
     return "GPT-4o-mini (OpenAI)"
 
 
-def main() -> None:
+async def main() -> None:
     provider = os.getenv("LLM_PROVIDER", "openai").lower()
     required_key = _required_api_key(provider)
 
@@ -373,9 +398,11 @@ def main() -> None:
             "sources_struct": [],
             "answer": "",
         }
-        result = rag.invoke(initial_state)
+        result = await rag.ainvoke(initial_state)
         print(f"Bot: {result['answer']}\n")
 
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+
+    asyncio.run(main())

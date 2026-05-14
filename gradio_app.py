@@ -11,13 +11,13 @@ custo zero por query no free tier).
 
 from __future__ import annotations
 
+import gc
 import logging
 import os
 from pathlib import Path
 from uuid import uuid4
 
 import gradio as gr
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from app import build_rag_graph, load_documents_from_files
 
@@ -31,8 +31,13 @@ logger = logging.getLogger(__name__)
 MAX_FILE_SIZE_MB = 5
 MAX_FILES_PER_SESSION = 3
 MAX_QUERIES_PER_SESSION = 30
+MAX_INDEX_OPERATIONS_PER_SESSION = 3
 
 QUOTA_QUERIES_MSG = "Limite da demo atingido para esta sessão. Recarregue a página pra recomeçar."
+QUOTA_INDEX_MSG = (
+    f"Limite de {MAX_INDEX_OPERATIONS_PER_SESSION} indexações por sessão atingido. "
+    "Recarregue a página pra recomeçar."
+)
 RATE_LIMIT_MSG = "Limite de requisições do provider atingido. Tente em ~1 minuto."
 NO_STATE_MSG = "Envie documentos primeiro."
 
@@ -42,19 +47,19 @@ def _is_rate_limit(exc: BaseException) -> bool:
     return "ratelimit" in s or "rate_limit" in s or "429" in s
 
 
-def _new_session_state(graph) -> dict:
-    return {
-        "id": uuid4().hex[:8],
-        "graph": graph,
-        "queries": 0,
-        "files_uploaded": 0,
-    }
-
-
 def index_files(files, current_state):
-    """Valida limites, carrega documentos e compila o grafo RAG da sessão."""
+    """Valida limites, carrega documentos e compila o grafo RAG da sessão.
+
+    Estado preservado entre uploads: o contador de queries não é zerado,
+    pra evitar que um usuário burle o limite por re-upload. Total de
+    indexações é capado por ``MAX_INDEX_OPERATIONS_PER_SESSION``.
+    """
     if not files:
-        return None, "Envie ao menos um arquivo (.txt, .md ou .pdf)."
+        return current_state, "Envie ao menos um arquivo (.txt, .md ou .pdf)."
+
+    uploads_done = (current_state or {}).get("uploads", 0)
+    if uploads_done >= MAX_INDEX_OPERATIONS_PER_SESSION:
+        return current_state, QUOTA_INDEX_MSG
 
     if len(files) > MAX_FILES_PER_SESSION:
         return current_state, (
@@ -77,24 +82,41 @@ def index_files(files, current_state):
     except Exception as exc:
         return current_state, f"Erro ao ler arquivos: {exc}"
 
-    splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=100)
-    n_chunks = len(splitter.split_documents(documents))
+    if current_state and current_state.get("id"):
+        session_id = current_state["id"]
+    else:
+        session_id = uuid4().hex[:8]
+    next_upload = uploads_done + 1
+    collection_name = f"docs_{session_id}_{next_upload}"
 
     try:
-        session_id = uuid4().hex[:8]
-        graph = build_rag_graph(documents, collection_name=f"docs_{session_id}")
+        # ``qdrant_url=""`` força in-memory mesmo se ``QDRANT_URL`` estiver no env
+        # (a demo é efêmera; não escreve num Qdrant compartilhado).
+        graph = build_rag_graph(documents, collection_name=collection_name, qdrant_url="")
     except Exception as exc:
         return current_state, f"Erro ao indexar: {exc}"
 
-    state = _new_session_state(graph)
-    state["files_uploaded"] = len(files)
+    if current_state is None:
+        state = {"id": session_id, "graph": graph, "queries": 0, "uploads": 1}
+    else:
+        # Drop the previous graph eagerly so its Qdrant in-memory data can be freed.
+        current_state["graph"] = graph
+        current_state["uploads"] = next_upload
+        state = current_state
+        gc.collect()
+
     logger.info(
-        "session=%s indexed files=%d chunks=%d",
+        "session=%s indexed files=%d documents=%d upload=%d",
         state["id"],
         len(files),
-        n_chunks,
+        len(documents),
+        next_upload,
     )
-    status = f"Indexados {n_chunks} chunks de {len(documents)} documento(s). Pronto pra perguntas."
+    status = (
+        f"Indexados {len(documents)} documento(s). "
+        f"Pronto pra perguntas ({state['queries']}/{MAX_QUERIES_PER_SESSION} já usadas, "
+        f"upload {next_upload}/{MAX_INDEX_OPERATIONS_PER_SESSION})."
+    )
     return state, status
 
 
@@ -206,12 +228,12 @@ with gr.Blocks(title="rag-chatbot — demo") as demo:
 
             gr.Examples(
                 examples=[
-                    "O que é LangChain?",
-                    "Para que serve FAISS?",
-                    "Como funciona RAG?",
+                    "Faça um resumo dos documentos.",
+                    "Quais são os principais conceitos abordados?",
+                    "Liste os tópicos cobertos.",
                 ],
                 inputs=[msg],
-                label="Perguntas-âncora (sample_docs.txt)",
+                label="Exemplos de perguntas",
             )
 
     with gr.Accordion("Fontes", open=False):
