@@ -3,26 +3,29 @@
 Pipeline LangGraph:
   retrieve (BM25 + Semantic → RRF fusion)
       → rerank (cross-encoder via FlashRank)
-          → generate (Claude ou GPT-4o-mini com contexto)
+          → generate (Claude, GPT-4o-mini ou Llama 3.3 via Groq com contexto)
 
 Banco vetorial: Qdrant in-memory (sem servidor extra — troque por
-QdrantClient(url="http://localhost:6333") para ambiente de produção).
+QdrantClient(url="http://localhost:6333") para um deploy real).
 
 Retrieval híbrido: Reciprocal Rank Fusion de BM25 e embeddings semânticos
 para cobertura de vocabulário exato + semântica.
 
 Observabilidade: LangSmith ativo quando LANGCHAIN_TRACING_V2=true no .env.
 
-Provider LLM: defina LLM_PROVIDER=anthropic (padrão: openai).
+Provider LLM: defina LLM_PROVIDER=anthropic|groq (padrão: openai).
 """
 
 from __future__ import annotations
 
+import logging
 import os
+import re
+import time
+from pathlib import Path
 from typing import TypedDict
 
 from dotenv import load_dotenv
-from langchain_community.document_loaders import TextLoader
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
 from langchain_core.language_models import BaseChatModel
@@ -30,9 +33,12 @@ from langchain_core.messages import HumanMessage
 from langchain_qdrant import QdrantVectorStore
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langgraph.graph import END, START, StateGraph
-from qdrant_client import QdrantClient
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
+
+CITATION_RE = re.compile(r"\[(\d+)\]")
 
 # ── LLM factory ───────────────────────────────────────────────────────────
 
@@ -41,8 +47,9 @@ def build_llm(provider: str | None = None) -> BaseChatModel:
     """Retorna o LLM configurado pelo env var LLM_PROVIDER.
 
     Providers suportados:
-      - openai   → gpt-4o-mini  (requer OPENAI_API_KEY)
+      - openai    → gpt-4o-mini  (requer OPENAI_API_KEY)
       - anthropic → claude-3-5-haiku-20241022  (requer ANTHROPIC_API_KEY)
+      - groq      → llama-3.3-70b-versatile  (requer GROQ_API_KEY; free tier rate-limited)
 
     Padrão: openai.
     """
@@ -56,6 +63,11 @@ def build_llm(provider: str | None = None) -> BaseChatModel:
             temperature=0.2,
         )
 
+    if provider == "groq":
+        from langchain_groq import ChatGroq
+
+        return ChatGroq(model="llama-3.3-70b-versatile", temperature=0.2)
+
     from langchain_openai import ChatOpenAI
 
     return ChatOpenAI(model="gpt-4o-mini", temperature=0.2)
@@ -68,39 +80,76 @@ class RAGState(TypedDict):
     query: str
     retrieved_docs: list[Document]
     reranked_docs: list[Document]
+    sources_struct: list[dict]
     answer: str
+
+
+def extract_citation_ids(text: str) -> list[int]:
+    """Extrai IDs de citações ``[N]`` na ordem de aparição, sem duplicar."""
+    seen: list[int] = []
+    for match in CITATION_RE.finditer(text):
+        n = int(match.group(1))
+        if n not in seen:
+            seen.append(n)
+    return seen
+
+
+# ── Document loading ──────────────────────────────────────────────────────
+
+
+def load_documents_from_files(paths: list[str | Path]) -> list[Document]:
+    """Lê .txt, .md e .pdf, retorna Documents prontos pra split.
+
+    Args:
+        paths: Caminhos para os arquivos. Extensões suportadas: .txt, .md, .pdf.
+
+    Returns:
+        Lista de Documents prontos pra ``build_retrievers``.
+    """
+    from langchain_community.document_loaders import PyMuPDFLoader, TextLoader
+
+    documents: list[Document] = []
+    for raw in paths:
+        path = Path(raw)
+        suffix = path.suffix.lower()
+        if suffix == ".pdf":
+            documents.extend(PyMuPDFLoader(str(path)).load())
+        elif suffix in {".txt", ".md"}:
+            documents.extend(TextLoader(str(path), encoding="utf-8").load())
+        else:
+            raise ValueError(f"Tipo de arquivo não suportado: {suffix} ({path})")
+    return documents
 
 
 # ── Indexing ──────────────────────────────────────────────────────────────
 
 
 def build_retrievers(
-    path: str = "data/sample_docs.txt",
+    documents: list[Document],
+    collection_name: str = "docs",
 ) -> tuple[object, BM25Retriever]:
-    """Constrói o retriever semântico (Qdrant) e o BM25 a partir do corpus.
+    """Constrói o retriever semântico (Qdrant) e o BM25 a partir dos documentos.
 
     Args:
-        path: Caminho para o arquivo de texto a indexar.
+        documents: Documentos já carregados (use ``load_documents_from_files``).
+        collection_name: Nome da coleção Qdrant — útil pra isolar sessões.
 
     Returns:
         Tupla (semantic_retriever, bm25_retriever).
     """
-    from langchain_openai import OpenAIEmbeddings
+    from langchain_huggingface import HuggingFaceEmbeddings
 
-    loader = TextLoader(path, encoding="utf-8")
-    docs = loader.load()
     splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=100)
-    chunks = splitter.split_documents(docs)
+    chunks = splitter.split_documents(documents)
 
-    # Qdrant in-memory — substitua por QdrantClient(url=...) em produção
-    client = QdrantClient(":memory:")
-    embeddings = OpenAIEmbeddings()
+    # Local embeddings keep the demo free of per-query API cost.
+    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
     vectorstore = QdrantVectorStore.from_documents(
         chunks,
         embedding=embeddings,
-        client=client,
-        collection_name="docs",
+        location=":memory:",
+        collection_name=collection_name,
     )
     semantic_retriever = vectorstore.as_retriever(search_kwargs={"k": 6})
 
@@ -142,16 +191,11 @@ def reciprocal_rank_fusion(
 # ── Re-ranking ────────────────────────────────────────────────────────────
 
 
-def rerank(query: str, docs: list[Document], top_n: int = 3) -> list[Document]:
+def rerank(query: str, docs: list[Document], top_n: int = 3) -> list[tuple[Document, float]]:
     """Re-rank documentos com cross-encoder (FlashRank), com fallback gracioso.
 
-    Args:
-        query: Query do usuário.
-        docs: Documentos candidatos a re-rankear.
-        top_n: Número de documentos a retornar.
-
-    Returns:
-        Top N documentos re-rankeados.
+    Retorna pares ``(Document, score)``. Quando FlashRank não está disponível
+    cai num fallback que passa os top_n por score de fusão com score 0.0.
     """
     try:
         from flashrank import Ranker, RerankRequest  # type: ignore[import]
@@ -160,11 +204,14 @@ def rerank(query: str, docs: list[Document], top_n: int = 3) -> list[Document]:
         passages = [{"id": i, "text": d.page_content} for i, d in enumerate(docs)]
         request = RerankRequest(query=query, passages=passages)
         results = ranker.rerank(request)
-        reranked_ids = [r["id"] for r in results[:top_n]]
-        return [docs[i] for i in reranked_ids if i < len(docs)]
+        out: list[tuple[Document, float]] = []
+        for r in results[:top_n]:
+            idx = r["id"]
+            if idx < len(docs):
+                out.append((docs[idx], float(r.get("score", 0.0))))
+        return out
     except ImportError:
-        # FlashRank não instalado — passa os top_n por score de fusão
-        return docs[:top_n]
+        return [(d, 0.0) for d in docs[:top_n]]
 
 
 # ── LangGraph nodes ───────────────────────────────────────────────────────
@@ -174,10 +221,20 @@ def make_retrieve_node(semantic_retriever: object, bm25_retriever: BM25Retriever
     """Cria o nó de retrieval híbrido: BM25 + semântico fundidos via RRF."""
 
     def retrieve(state: RAGState) -> RAGState:
+        t0 = time.perf_counter()
         query = state["query"]
         semantic = semantic_retriever.invoke(query)  # type: ignore[union-attr]
         keyword = bm25_retriever.invoke(query)
         fused = reciprocal_rank_fusion([semantic, keyword])
+        dt_ms = (time.perf_counter() - t0) * 1000
+        logger.info(
+            "retrieve query=%r semantic=%d bm25=%d fused=%d latency_ms=%.1f",
+            query[:80],
+            len(semantic),
+            len(keyword),
+            len(fused),
+            dt_ms,
+        )
         return {**state, "retrieved_docs": fused}
 
     return retrieve
@@ -185,23 +242,53 @@ def make_retrieve_node(semantic_retriever: object, bm25_retriever: BM25Retriever
 
 def rerank_node(state: RAGState) -> RAGState:
     """Nó de re-ranking: cross-encoder sobre os candidatos fundidos."""
-    reranked = rerank(state["query"], state["retrieved_docs"])
-    return {**state, "reranked_docs": reranked}
+    t0 = time.perf_counter()
+    query = state["query"]
+    in_docs = state["retrieved_docs"]
+    pairs = rerank(query, in_docs)
+    reranked = [d for d, _ in pairs]
+    sources_struct = [
+        {"id": i + 1, "snippet": d.page_content[:180], "score": s} for i, (d, s) in enumerate(pairs)
+    ]
+    dt_ms = (time.perf_counter() - t0) * 1000
+    logger.info(
+        "rerank query=%r in=%d out=%d latency_ms=%.1f",
+        query[:80],
+        len(in_docs),
+        len(reranked),
+        dt_ms,
+    )
+    return {**state, "reranked_docs": reranked, "sources_struct": sources_struct}
 
 
 def make_generate_node(llm: BaseChatModel):
-    """Cria o nó de geração: prompt com contexto re-rankeado → LLM."""
+    """Cria o nó de geração: prompt com contexto re-rankeado e numerado → LLM."""
 
     def generate(state: RAGState) -> RAGState:
-        context = "\n\n".join(d.page_content for d in state["reranked_docs"])
+        t0 = time.perf_counter()
+        query = state["query"]
+        numbered = "\n\n".join(
+            f"[{i + 1}] {d.page_content}" for i, d in enumerate(state["reranked_docs"])
+        )
         prompt = (
             "Use ONLY the context below to answer the question.\n"
-            "If the answer is not in the context, say you don't know.\n\n"
-            f"Context:\n{context}\n\n"
-            f"Question: {state['query']}"
+            "Cite each claim with [N] referencing the source document.\n"
+            "If the answer is not in the context, say you don't know — "
+            "without inventing citations.\n\n"
+            f"Context:\n{numbered}\n\n"
+            f"Question: {query}"
         )
         response = llm.invoke([HumanMessage(content=prompt)])
-        return {**state, "answer": response.content}
+        dt_ms = (time.perf_counter() - t0) * 1000
+        answer = response.content
+        logger.info(
+            "generate query=%r docs=%d answer_chars=%d latency_ms=%.1f",
+            query[:80],
+            len(state["reranked_docs"]),
+            len(answer) if isinstance(answer, str) else 0,
+            dt_ms,
+        )
+        return {**state, "answer": answer}
 
     return generate
 
@@ -209,16 +296,17 @@ def make_generate_node(llm: BaseChatModel):
 # ── Graph factory ─────────────────────────────────────────────────────────
 
 
-def build_rag_graph(data_path: str = "data/sample_docs.txt"):
+def build_rag_graph(documents: list[Document], collection_name: str = "docs"):
     """Constrói e compila o grafo LangGraph do pipeline RAG.
 
     Args:
-        data_path: Caminho para o corpus de documentos.
+        documents: Documentos já carregados (use ``load_documents_from_files``).
+        collection_name: Nome da coleção Qdrant — útil pra isolar sessões.
 
     Returns:
         Grafo compilado pronto para invoke/stream.
     """
-    semantic, bm25 = build_retrievers(data_path)
+    semantic, bm25 = build_retrievers(documents, collection_name=collection_name)
     llm = build_llm()
 
     graph = StateGraph(RAGState)
@@ -237,24 +325,40 @@ def build_rag_graph(data_path: str = "data/sample_docs.txt"):
 # ── CLI ───────────────────────────────────────────────────────────────────
 
 
+def _required_api_key(provider: str) -> str:
+    if provider == "anthropic":
+        return "ANTHROPIC_API_KEY"
+    if provider == "groq":
+        return "GROQ_API_KEY"
+    return "OPENAI_API_KEY"
+
+
+def _provider_label(provider: str) -> str:
+    if provider == "anthropic":
+        return "Claude (Anthropic)"
+    if provider == "groq":
+        return "Llama 3.3 70B (Groq)"
+    return "GPT-4o-mini (OpenAI)"
+
+
 def main() -> None:
-    provider = os.getenv("LLM_PROVIDER", "openai")
-    required_key = "ANTHROPIC_API_KEY" if provider == "anthropic" else "OPENAI_API_KEY"
+    provider = os.getenv("LLM_PROVIDER", "openai").lower()
+    required_key = _required_api_key(provider)
 
     if not os.getenv(required_key):
         print(f"⚠️  Defina {required_key} no arquivo .env")
         return
 
     tracing = os.getenv("LANGCHAIN_TRACING_V2", "false").lower() == "true"
-    provider_label = "Claude (Anthropic)" if provider == "anthropic" else "GPT-4o-mini (OpenAI)"
 
     print("🔎 Indexando corpus (Qdrant in-memory + BM25)...")
-    print(f"Provider: {provider_label}")
+    print(f"Provider: {_provider_label(provider)}")
     if tracing:
         project = os.getenv("LANGSMITH_PROJECT", "rag-chatbot")
         print(f"📊 LangSmith tracing ativo — projeto: {project}")
 
-    rag = build_rag_graph()
+    documents = load_documents_from_files(["data/sample_docs.txt"])
+    rag = build_rag_graph(documents)
     print("✅ RAG chatbot pronto! Digite 'sair' para encerrar.\n")
 
     while True:
@@ -266,6 +370,7 @@ def main() -> None:
             "query": query,
             "retrieved_docs": [],
             "reranked_docs": [],
+            "sources_struct": [],
             "answer": "",
         }
         result = rag.invoke(initial_state)
