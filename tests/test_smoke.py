@@ -24,6 +24,7 @@ def test_repo_layout() -> None:
     assert (ROOT / ".env.example").is_file()
     assert (ROOT / "evals" / "__init__.py").is_file()
     assert (ROOT / "data" / "sample_docs.txt").is_file()
+    assert (ROOT / "data" / "example.md").is_file()
 
 
 def test_readme_present_and_branded() -> None:
