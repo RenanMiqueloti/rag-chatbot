@@ -183,3 +183,161 @@ def test_is_rate_limit_detects_common_signatures() -> None:
     assert gradio_app._is_rate_limit(RateLimitError("over quota"))
     assert gradio_app._is_rate_limit(HTTPError("HTTP 429 Too Many Requests"))
     assert not gradio_app._is_rate_limit(ValueError("just a value error"))
+
+
+def test_daily_request_budget_consumes_and_refuses() -> None:
+    from rate_limits import DailyRequestBudget
+
+    b = DailyRequestBudget(cap=2)
+    assert b.remaining() == 2
+    assert b.try_consume() is True
+    assert b.try_consume() is True
+    assert b.try_consume() is False
+    assert b.remaining() == 0
+
+
+def test_daily_request_budget_disabled_when_cap_zero() -> None:
+    from rate_limits import DailyRequestBudget
+
+    b = DailyRequestBudget(cap=0)
+    assert b.remaining() == -1
+    for _ in range(1000):
+        assert b.try_consume() is True
+
+
+def test_daily_request_budget_resets_after_midnight(monkeypatch) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    import rate_limits
+
+    fixed_now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+
+    class _Clock:
+        current = fixed_now
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current
+
+    monkeypatch.setattr(rate_limits, "datetime", _Clock)
+
+    b = rate_limits.DailyRequestBudget(cap=1)
+    assert b.try_consume() is True
+    assert b.try_consume() is False
+
+    _Clock.current = fixed_now + timedelta(days=1, hours=1)
+    assert b.try_consume() is True
+
+
+def test_api_query_rejects_too_long_payload() -> None:
+    pytest.importorskip("fastapi")
+    pytest.importorskip("slowapi")
+    from fastapi.testclient import TestClient
+
+    import api
+
+    client = TestClient(api.app)
+    long_query = "a" * (api.MAX_QUERY_CHARS + 1)
+    resp = client.post("/query", json={"query": long_query})
+    assert resp.status_code == 422
+
+
+def test_api_query_rejects_empty_payload() -> None:
+    pytest.importorskip("fastapi")
+    pytest.importorskip("slowapi")
+    from fastapi.testclient import TestClient
+
+    import api
+
+    client = TestClient(api.app)
+    resp = client.post("/query", json={"query": ""})
+    assert resp.status_code == 422
+
+
+def test_api_rate_limiter_returns_429_after_cap(monkeypatch) -> None:
+    """Slowapi 429 acionado quando IP excede o limite por minuto."""
+    pytest.importorskip("fastapi")
+    pytest.importorskip("slowapi")
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "2")
+    monkeypatch.setenv("RATE_LIMIT_PER_HOUR", "1000")
+    monkeypatch.setenv("DAILY_REQUEST_CAP", "0")
+
+    import importlib
+
+    import api as api_module
+
+    api_module = importlib.reload(api_module)
+    client = TestClient(api_module.app)
+
+    statuses = [client.post("/query", json={"query": "ola"}).status_code for _ in range(4)]
+    # com pipeline não inicializado, primeiras passam pelo limiter e batem em 503;
+    # depois do cap, slowapi devolve 429 antes de chegar no handler
+    assert 429 in statuses
+    assert statuses.count(429) >= 2
+
+
+def test_api_daily_budget_returns_429(monkeypatch) -> None:
+    """Cap diário esgotado vira 429 com mensagem amigável."""
+    pytest.importorskip("fastapi")
+    pytest.importorskip("slowapi")
+    pytest.importorskip("langgraph")
+    pytest.importorskip("langchain_qdrant")
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "1000")
+    monkeypatch.setenv("RATE_LIMIT_PER_HOUR", "10000")
+    monkeypatch.setenv("DAILY_REQUEST_CAP", "1")
+
+    import importlib
+
+    import api as api_module
+
+    api_module = importlib.reload(api_module)
+
+    class _StubGraph:
+        async def ainvoke(self, state):
+            return {"answer": "ok", "sources_struct": []}
+
+    api_module._rag_graph = _StubGraph()  # bypass lifespan
+
+    client = TestClient(api_module.app)
+    first = client.post("/query", json={"query": "ola"})
+    second = client.post("/query", json={"query": "ola"})
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert (
+        "diária" in second.json()["detail"].lower() or "diaria" in second.json()["detail"].lower()
+    )
+
+
+def test_api_upstream_429_returns_friendly_message(monkeypatch) -> None:
+    """Erro de rate limit do provider vira 429 com mensagem clara, não 500."""
+    pytest.importorskip("fastapi")
+    pytest.importorskip("slowapi")
+    pytest.importorskip("langgraph")
+    pytest.importorskip("langchain_qdrant")
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "1000")
+    monkeypatch.setenv("RATE_LIMIT_PER_HOUR", "10000")
+    monkeypatch.setenv("DAILY_REQUEST_CAP", "0")
+
+    import importlib
+
+    import api as api_module
+
+    api_module = importlib.reload(api_module)
+
+    class _RateLimitedGraph:
+        async def ainvoke(self, state):
+            raise RuntimeError("HTTP 429 Too Many Requests from provider")
+
+    api_module._rag_graph = _RateLimitedGraph()
+
+    client = TestClient(api_module.app)
+    resp = client.post("/query", json={"query": "ola"})
+    assert resp.status_code == 429
+    assert "provider" in resp.json()["detail"].lower()
