@@ -2,7 +2,11 @@ FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    HF_HOME=/app/hf-cache \
+    TRANSFORMERS_CACHE=/app/hf-cache \
+    FLASHRANK_CACHE_DIR=/app/flashrank-cache \
+    GRADIO_SERVER_PORT=7860
 
 WORKDIR /app
 
@@ -13,14 +17,21 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
+# Pre-cache embedding + rerank models so first request doesn't pay the download.
+# Embedding E5-small multilingual (max_seq 512 tokens, evita truncamento dos
+# chunks de 600 chars) + reranker MiniLM (discrimina bem em PT; MultiBERT
+# satura todos os scores em ~1.0 → mata o ranking).
+RUN python -c "from sentence_transformers import SentenceTransformer; \
+    SentenceTransformer('intfloat/multilingual-e5-small')" \
+ && python -c "from flashrank import Ranker; \
+    Ranker(model_name='ms-marco-MiniLM-L-12-v2', cache_dir='/app/flashrank-cache')"
+
 COPY . .
 
-RUN useradd -m -u 1001 appuser && chown -R appuser:appuser /app
-USER appuser
+# HF Spaces (Docker SDK) expects UID 1000 by default.
+RUN useradd -m -u 1000 user && chown -R user:user /app
+USER user
 
-EXPOSE 8000
+EXPOSE 7860
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD curl -fsS http://localhost:8000/health || exit 1
-
-CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
+CMD ["python", "gradio_app.py"]
