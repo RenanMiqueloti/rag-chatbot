@@ -4,7 +4,6 @@ emoji: 📚
 colorFrom: indigo
 colorTo: purple
 sdk: docker
-app_file: Dockerfile.spaces
 app_port: 7860
 pinned: false
 short_description: Demo de RAG com upload de documentos e citações
@@ -102,7 +101,7 @@ python3 -m evals.evaluate
 
 ## Demo Gradio em Hugging Face Spaces
 
-Construída com `Dockerfile.spaces` (SDK Docker, porta 7860). Sessão isolada por usuário: documentos vivem só na sessão e somem em qualquer restart do Space.
+Construída com `Dockerfile` (SDK Docker, porta 7860). Sessão isolada por usuário: documentos vivem só na sessão e somem em qualquer restart do Space.
 
 **Limites por sessão:**
 
@@ -259,7 +258,7 @@ docker compose down -v         # apaga volumes (reset completo)
 ### Rodar só a API (sem Qdrant dedicado)
 
 ```bash
-docker build -t rag-chatbot:local .
+docker build -f Dockerfile.api -t rag-chatbot:local .
 docker run --rm -p 8000:8000 \
   -e OPENAI_API_KEY=$OPENAI_API_KEY \
   rag-chatbot:local
@@ -269,10 +268,10 @@ Nesse modo o pipeline cai no `QdrantClient(":memory:")` e funciona standalone.
 
 ### Imagem do HF Spaces
 
-`Dockerfile.spaces` empacota o `gradio_app.py` (Docker SDK, porta 7860). Pra rodar local:
+`Dockerfile` empacota o `gradio_app.py` (Docker SDK, porta 7860) — é o que o HF Spaces usa por default. Pra rodar local:
 
 ```bash
-docker build -f Dockerfile.spaces -t rag-chatbot:spaces .
+docker build -t rag-chatbot:spaces .
 docker run --rm -p 7860:7860 \
   -e LLM_PROVIDER=groq \
   -e GROQ_API_KEY=$GROQ_API_KEY \
@@ -317,8 +316,8 @@ rag-chatbot/
 ├── tests/
 │   └── test_smoke.py   # Smoke tests do pipeline e da API
 ├── docs/img/           # Screenshots da demo
-├── Dockerfile          # Imagem da API REST
-├── Dockerfile.spaces   # Imagem da demo Gradio (HF Spaces)
+├── Dockerfile          # Imagem da demo Gradio (HF Spaces) — picked up por default
+├── Dockerfile.api      # Imagem da API REST (usar via -f no docker build)
 ├── docker-compose.yml  # API + Qdrant local
 ├── pyproject.toml
 ├── requirements.txt
