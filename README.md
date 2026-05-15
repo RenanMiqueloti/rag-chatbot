@@ -1,10 +1,22 @@
+---
+title: rag-chatbot
+emoji: 📚
+colorFrom: indigo
+colorTo: purple
+sdk: docker
+app_file: Dockerfile.spaces
+app_port: 7860
+pinned: false
+short_description: Demo de RAG com upload de documentos e citações
+---
+
 # rag-chatbot
 
 ![CI](https://github.com/RenanMiqueloti/rag-chatbot/actions/workflows/ci.yml/badge.svg)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.12-blue.svg)
 
-Pipeline RAG com LangGraph, Qdrant, hybrid retrieval (BM25 + dense + RRF), re-ranking via cross-encoder e tracing via LangSmith. Suporta Claude (Anthropic) e GPT-4o-mini (OpenAI).
+Pipeline RAG com LangGraph, Qdrant, hybrid retrieval (BM25 + dense + RRF), re-ranking via cross-encoder e tracing via LangSmith. Suporta Claude (Anthropic), GPT-4o-mini (OpenAI) e Llama 3.3 70B (Groq).
 
 > Demo local autocontido — troque `QdrantClient(":memory:")` por `QdrantClient(url=...)` para um deploy real.
 
@@ -41,7 +53,7 @@ graph LR
 - **FlashRank** (opcional) — cross-encoder leve para re-ranking local
 - **FastAPI** — endpoint REST + streaming
 - **LangSmith** — tracing nativo LangGraph (node-by-node state diffs)
-- **Claude (Anthropic) / GPT-4o-mini** — provider configurável via `LLM_PROVIDER` env var
+- **Claude (Anthropic) / GPT-4o-mini / Llama 3.3 70B (Groq)** — provider configurável via `LLM_PROVIDER` env var
 - **LLM-as-judge evals** — avaliação automática de relevance, faithfulness, completeness
 
 ---
@@ -56,7 +68,8 @@ rag-chatbot/
 │   ├── evaluate.py    # Harness de evals com LLM-as-judge
 │   └── dataset.json   # Dataset de perguntas para regressão
 ├── data/
-│   └── sample_docs.txt
+│   ├── sample_docs.txt
+│   └── example.md     # primer sobre RAG — bom corpus de partida pra demo
 ├── .env.example
 ├── requirements.txt
 └── LICENSE
@@ -93,6 +106,22 @@ python -m evals.evaluate
 
 ---
 
+## Demo online
+
+Demo Gradio rodando em Hugging Face Spaces — URL será publicada após o deploy.
+
+Limitações da demo:
+
+- 3 arquivos por sessão, até 5 MB cada (`.txt`, `.md`, `.pdf`)
+- 30 perguntas por sessão (acumulado — não reseta ao re-upload)
+- 3 indexações por sessão
+- Documentos não são persistidos entre sessões ou restarts do Space
+
+Sem corpus próprio? `data/example.md` neste repo é um primer curto sobre RAG e
+serve como ponto de partida — baixe e suba na demo.
+
+---
+
 ## Providers LLM
 
 Configure `LLM_PROVIDER` no `.env`:
@@ -101,6 +130,7 @@ Configure `LLM_PROVIDER` no `.env`:
 |---|---|---|
 | `openai` (padrão) | gpt-4o-mini | `OPENAI_API_KEY` |
 | `anthropic` | claude-3-5-haiku-20241022 | `ANTHROPIC_API_KEY` |
+| `groq` | llama-3.3-70b-versatile | `GROQ_API_KEY` (free tier, rate-limited) |
 
 ---
 
@@ -122,38 +152,37 @@ Com tracing ativo, cada execução do pipeline registra no LangSmith:
 
 ---
 
-## Re-ranking opcional (FlashRank)
+## Re-ranking (FlashRank)
 
-```bash
-pip install flashrank
-```
-
-Sem FlashRank instalado o pipeline funciona normalmente — o nó `rerank` retorna os top-3 por score RRF.
+`flashrank` já vem em `requirements.txt`. Se você remover, o nó `rerank` cai
+num fallback que apenas trunca os top-3 do RRF — o pipeline continua funcionando,
+mas sem cross-encoder reordenando.
 
 ---
 
-## Migrar para Qdrant servidor (deploy real)
+## Qdrant servidor (deploy real)
 
-Em `app.py`, troque:
+Sem `QDRANT_URL` definido, o pipeline cai em in-memory (sem persistência).
+Pra apontar para um Qdrant rodando, configure no `.env`:
 
-```python
-# Antes (in-memory / dev):
-client = QdrantClient(":memory:")
-
-# Depois (deploy real):
-client = QdrantClient(url="http://localhost:6333", api_key=os.getenv("QDRANT_API_KEY"))
+```env
+QDRANT_URL=http://localhost:6333
+# QDRANT_API_KEY=...   # se a instância exigir auth
 ```
+
+A função `build_retrievers(documents, qdrant_url=...)` também aceita override
+explícito (`""` força in-memory mesmo com env definido — usado pela demo Gradio).
 
 ---
 
-## Deploy completo (Docker Compose)
+## Deploy via Docker Compose
 
-O repositório inclui `Dockerfile` + `docker-compose.yml` pra subir o serviço com Qdrant, PostgreSQL e Redis numa só linha.
+O repositório inclui `Dockerfile` + `docker-compose.yml` pra subir a API junto com um Qdrant dedicado.
 
 ### Subir o stack
 
 ```bash
-cp .env.example .env       # preencha OPENAI_API_KEY (ou ANTHROPIC_API_KEY)
+cp .env.example .env       # preencha a key do provider escolhido
 docker compose up -d --build
 ```
 
@@ -163,8 +192,6 @@ docker compose up -d --build
 |---|---|---|
 | API (FastAPI) | http://localhost:8000 | — |
 | Qdrant (REST + gRPC) | http://localhost:6333 / :6334 | `qdrant_data` |
-| PostgreSQL | localhost:5432 (`rag/rag/rag`) | `postgres_data` |
-| Redis | localhost:6379 | `redis_data` |
 
 A API tem `HEALTHCHECK` em `GET /health` (intervalo 30s, timeout 5s, 3 retries).
 
@@ -175,7 +202,7 @@ docker compose down            # mantém volumes (estado persiste)
 docker compose down -v         # apaga volumes (reset completo)
 ```
 
-### Rodar só o serviço de API (sem Qdrant/PG/Redis)
+### Rodar só o serviço de API (sem Qdrant dedicado)
 
 ```bash
 docker build -t rag-chatbot:local .
@@ -185,6 +212,25 @@ docker run --rm -p 8000:8000 \
 ```
 
 Nesse modo o pipeline cai no `QdrantClient(":memory:")` e funciona standalone.
+
+### Demo Gradio (Hugging Face Spaces)
+
+A imagem `Dockerfile.spaces` empacota o `gradio_app.py` para rodar no Hugging Face Spaces (Docker SDK, porta 7860). Local:
+
+```bash
+docker build -f Dockerfile.spaces -t rag-chatbot:spaces .
+docker run --rm -p 7860:7860 \
+  -e LLM_PROVIDER=groq \
+  -e GROQ_API_KEY=$GROQ_API_KEY \
+  rag-chatbot:spaces
+```
+
+Sem Docker:
+
+```bash
+pip install -r requirements.txt
+python gradio_app.py
+```
 
 ---
 

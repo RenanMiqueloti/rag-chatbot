@@ -35,22 +35,28 @@ async def lifespan(app: FastAPI):
     global _rag_graph
 
     provider = os.getenv("LLM_PROVIDER", "openai").lower()
-    required_key = "ANTHROPIC_API_KEY" if provider == "anthropic" else "OPENAI_API_KEY"
+    if provider == "anthropic":
+        required_key = "ANTHROPIC_API_KEY"
+    elif provider == "groq":
+        required_key = "GROQ_API_KEY"
+    else:
+        required_key = "OPENAI_API_KEY"
 
     if not os.getenv(required_key):
         raise RuntimeError(
             f"{required_key} não definida. Configure o arquivo .env (LLM_PROVIDER={provider})"
         )
 
-    from app import build_rag_graph
+    from app import build_rag_graph, load_documents_from_files
 
-    _rag_graph = await asyncio.to_thread(build_rag_graph)
+    documents = await asyncio.to_thread(load_documents_from_files, ["data/sample_docs.txt"])
+    _rag_graph = await asyncio.to_thread(build_rag_graph, documents)
     yield
 
 
 app = FastAPI(
     title="RAG Chatbot API",
-    description="Production RAG pipeline: hybrid retrieval → re-ranking → generation",
+    description="Pipeline RAG: hybrid retrieval → re-ranking → generation",
     version="2.1.0",
     lifespan=lifespan,
 )
@@ -69,9 +75,15 @@ class QueryRequest(BaseModel):
     query: str
 
 
+class Source(BaseModel):
+    id: int
+    snippet: str
+    score: float
+
+
 class QueryResponse(BaseModel):
     answer: str
-    sources: list[str]
+    sources: list[Source]
 
 
 # ── Endpoints ─────────────────────────────────────────────────────────────
@@ -87,40 +99,37 @@ async def health() -> dict:
     }
 
 
+def _initial_state(query: str) -> dict:
+    return {
+        "query": query,
+        "retrieved_docs": [],
+        "reranked_docs": [],
+        "sources_struct": [],
+        "answer": "",
+    }
+
+
 @app.post("/query", response_model=QueryResponse)
 async def query_endpoint(request: QueryRequest) -> QueryResponse:
-    """Resposta completa em JSON."""
+    """Resposta completa em JSON, com fontes numeradas."""
     rag = _get_graph()
-    result = await asyncio.to_thread(
-        rag.invoke,
-        {
-            "query": request.query,
-            "retrieved_docs": [],
-            "reranked_docs": [],
-            "answer": "",
-        },
-    )
-    sources = [d.page_content[:120] + "..." for d in result["reranked_docs"]]
+    result = await rag.ainvoke(_initial_state(request.query))
+    sources = [Source(**s) for s in result.get("sources_struct", [])]
     return QueryResponse(answer=result["answer"], sources=sources)
 
 
 @app.post("/stream")
 async def stream_endpoint(request: QueryRequest) -> StreamingResponse:
-    """Streaming da resposta palavra a palavra."""
+    """Streaming token-a-token via LangGraph astream_events."""
+    rag = _get_graph()
 
     async def token_generator():
-        rag = _get_graph()
-        result = await asyncio.to_thread(
-            rag.invoke,
-            {
-                "query": request.query,
-                "retrieved_docs": [],
-                "reranked_docs": [],
-                "answer": "",
-            },
-        )
-        for word in result["answer"].split():
-            yield word + " "
-            await asyncio.sleep(0.015)
+        async for ev in rag.astream_events(_initial_state(request.query), version="v2"):
+            if ev["event"] != "on_chat_model_stream":
+                continue
+            chunk = ev["data"].get("chunk")
+            token = getattr(chunk, "content", "") if chunk is not None else ""
+            if token:
+                yield token
 
     return StreamingResponse(token_generator(), media_type="text/plain")

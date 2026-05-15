@@ -1,0 +1,33 @@
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    HF_HOME=/app/hf-cache \
+    TRANSFORMERS_CACHE=/app/hf-cache \
+    FLASHRANK_CACHE_DIR=/app/flashrank-cache
+
+WORKDIR /app
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+
+# Pre-cache embedding + rerank models so first request doesn't pay the download.
+RUN python -c "from sentence_transformers import SentenceTransformer; \
+    SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')" \
+ && python -c "from flashrank import Ranker; \
+    Ranker(model_name='ms-marco-MiniLM-L-12-v2', cache_dir='/app/flashrank-cache')"
+
+COPY . .
+
+# HF Spaces (Docker SDK) expects UID 1000 by default.
+RUN useradd -m -u 1000 user && chown -R user:user /app
+USER user
+
+EXPOSE 7860
+
+CMD ["python", "gradio_app.py"]

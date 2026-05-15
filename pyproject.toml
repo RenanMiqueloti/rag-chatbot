@@ -1,7 +1,7 @@
 [project]
 name = "rag-chatbot"
 version = "0.1.0"
-description = "RAG de produção: LangGraph + Qdrant + hybrid BM25/dense + RRF + cross-encoder re-rank + FastAPI streaming + LangSmith"
+description = "Pipeline RAG com LangGraph, Qdrant, hybrid BM25/dense + RRF, cross-encoder rerank e FastAPI"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
@@ -38,9 +38,9 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
-# RUF002/RUF003: ambiguous unicode chars in docstrings (en-dash, em-dash) are
+# RUF001/RUF002/RUF003: ambiguous unicode chars (en-dash, em-dash, ×) are
 # intentional in pt-BR copy. E501: line length is enforced by the formatter.
-ignore = ["E501", "RUF002", "RUF003"]
+ignore = ["E501", "RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.format]
 quote-style = "double"
