@@ -19,7 +19,13 @@ from uuid import uuid4
 
 import gradio as gr
 
-from app import EmptyDocumentError, build_rag_graph, load_documents_from_files
+from app import (
+    EmptyDocumentError,
+    EncodingError,
+    ProtectedDocumentError,
+    build_rag_graph,
+    load_documents_from_files,
+)
 from rate_limits import RATE_LIMIT_MSG as _SHARED_RATE_LIMIT_MSG
 from rate_limits import is_rate_limit as _shared_is_rate_limit
 
@@ -31,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 MAX_FILE_SIZE_MB = 5
+MAX_TOTAL_SIZE_MB = 15  # soma máxima cumulativa por batch (3 arquivos × 5 MB)
 MAX_FILES_PER_SESSION = 3
 MAX_QUERIES_PER_SESSION = 30
 MAX_INDEX_OPERATIONS_PER_SESSION = 3
@@ -107,43 +114,77 @@ def _is_rate_limit(exc: BaseException) -> bool:
 def index_files(files, current_state):
     """Valida limites, carrega documentos e compila o grafo RAG da sessão.
 
+    Generator que faz yield em cada etapa pra UI mostrar progresso:
+    validação → leitura → indexação → pronto. Cada yield atualiza o status
+    chip no Gradio.
+
     Estado preservado entre uploads: o contador de queries não é zerado,
     pra evitar que um usuário burle o limite por re-upload. Total de
     indexações é capado por ``MAX_INDEX_OPERATIONS_PER_SESSION``.
     """
     if not files:
-        return current_state, _status_chip(
-            "Envie ao menos um arquivo (.txt, .md ou .pdf).", "error"
-        )
+        yield current_state, _status_chip("Envie ao menos um arquivo (.txt, .md ou .pdf).", "error")
+        return
 
     uploads_done = (current_state or {}).get("uploads", 0)
     if uploads_done >= MAX_INDEX_OPERATIONS_PER_SESSION:
-        return current_state, _status_chip(QUOTA_INDEX_MSG, "error")
+        yield current_state, _status_chip(QUOTA_INDEX_MSG, "error")
+        return
 
     if len(files) > MAX_FILES_PER_SESSION:
-        return current_state, _status_chip(
-            f"Máximo de {MAX_FILES_PER_SESSION} arquivos por sessão (enviou {len(files)}).",
-            "error",
+        yield (
+            current_state,
+            _status_chip(
+                f"Máximo de {MAX_FILES_PER_SESSION} arquivos por sessão (enviou {len(files)}).",
+                "error",
+            ),
         )
+        return
 
+    total_mb = 0.0
     for f in files:
         try:
             size_mb = os.path.getsize(f.name) / (1024 * 1024)
         except OSError as exc:
-            return current_state, _status_chip(f"Erro lendo {Path(f.name).name}: {exc}", "error")
+            yield current_state, _status_chip(f"Erro lendo {Path(f.name).name}: {exc}", "error")
+            return
         if size_mb > MAX_FILE_SIZE_MB:
-            return current_state, _status_chip(
-                f"{Path(f.name).name} excede {MAX_FILE_SIZE_MB} MB ({size_mb:.1f} MB).",
-                "error",
+            yield (
+                current_state,
+                _status_chip(
+                    f"{Path(f.name).name} excede {MAX_FILE_SIZE_MB} MB ({size_mb:.1f} MB).",
+                    "error",
+                ),
             )
+            return
+        total_mb += size_mb
+
+    if total_mb > MAX_TOTAL_SIZE_MB:
+        yield (
+            current_state,
+            _status_chip(
+                f"Soma dos arquivos ({total_mb:.1f} MB) excede o limite de {MAX_TOTAL_SIZE_MB} MB.",
+                "error",
+            ),
+        )
+        return
+
+    yield current_state, _status_chip(f"Lendo {len(files)} arquivo(s)…", "active")
 
     try:
         paths = [f.name for f in files]
         documents = load_documents_from_files(paths)
-    except EmptyDocumentError as exc:
-        return current_state, _status_chip(str(exc), "error")
+    except (EmptyDocumentError, ProtectedDocumentError, EncodingError) as exc:
+        yield current_state, _status_chip(str(exc), "error")
+        return
     except Exception as exc:
-        return current_state, _status_chip(f"Erro ao ler arquivos: {exc}", "error")
+        yield current_state, _status_chip(f"Erro ao ler arquivos: {exc}", "error")
+        return
+
+    yield (
+        current_state,
+        _status_chip(f"Indexando {len(documents)} página(s)/documento(s)…", "active"),
+    )
 
     if current_state and current_state.get("id"):
         session_id = current_state["id"]
@@ -157,7 +198,8 @@ def index_files(files, current_state):
         # (a demo é efêmera; não escreve num Qdrant compartilhado).
         graph = build_rag_graph(documents, collection_name=collection_name, qdrant_url="")
     except Exception as exc:
-        return current_state, _status_chip(f"Erro ao indexar: {exc}", "error")
+        yield current_state, _status_chip(f"Erro ao indexar: {exc}", "error")
+        return
 
     if current_state is None:
         state = {"id": session_id, "graph": graph, "queries": 0, "uploads": 1}
@@ -175,7 +217,13 @@ def index_files(files, current_state):
         len(documents),
         next_upload,
     )
-    return state, _status_chip("Indexado", "ready")
+    yield (
+        state,
+        _status_chip(
+            f"Pronto · {len(documents)} doc(s) · {next_upload}/{MAX_INDEX_OPERATIONS_PER_SESSION} uploads",
+            "ready",
+        ),
+    )
 
 
 def _render_sources(sources_struct: list[dict]) -> str:
