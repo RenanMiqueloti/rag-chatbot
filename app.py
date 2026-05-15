@@ -76,12 +76,13 @@ def build_llm(provider: str | None = None) -> BaseChatModel:
 # ── State ─────────────────────────────────────────────────────────────────
 
 
-class RAGState(TypedDict):
+class RAGState(TypedDict, total=False):
     query: str
     retrieved_docs: list[Document]
     reranked_docs: list[Document]
     sources_struct: list[dict]
     answer: str
+    broad: bool
 
 
 def extract_citation_ids(text: str) -> list[int]:
@@ -250,7 +251,7 @@ def build_retrievers(
     documents: list[Document],
     collection_name: str = "docs",
     qdrant_url: str | None = None,
-) -> tuple[object, BM25Retriever]:
+) -> tuple[object, BM25Retriever, list[Document]]:
     """Constrói o retriever semântico (Qdrant) e o BM25 a partir dos documentos.
 
     Args:
@@ -260,9 +261,20 @@ def build_retrievers(
             string vazia força in-memory; URL explícito conecta ao servidor.
 
     Returns:
-        Tupla (semantic_retriever, bm25_retriever).
+        Tupla (semantic_retriever, bm25_retriever, chunks).
     """
     chunks = _split_documents(documents)
+    sources_summary: dict[str, int] = {}
+    for d in documents:
+        src = Path(d.metadata.get("source", "")).name or "unknown"
+        sources_summary[src] = sources_summary.get(src, 0) + 1
+    logger.info(
+        "index docs=%d sources=%s chunks=%d sample_chunk_chars=%s",
+        len(documents),
+        sources_summary,
+        len(chunks),
+        [len(c.page_content) for c in chunks[:5]],
+    )
 
     embedding_model = os.getenv("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
     embeddings = _build_embeddings(embedding_model)
@@ -291,7 +303,7 @@ def build_retrievers(
     bm25 = BM25Retriever.from_documents(chunks)
     bm25.k = 10
 
-    return semantic_retriever, bm25
+    return semantic_retriever, bm25, chunks
 
 
 # ── Hybrid fusion via RRF ─────────────────────────────────────────────────
@@ -330,6 +342,34 @@ DEFAULT_RERANKER_MODEL = "ms-marco-MiniLM-L-12-v2"
 
 
 RERANK_CONFIDENCE_THRESHOLD = 0.5
+
+
+BROAD_QUERY_RE = re.compile(
+    r"\b(resumo|resuma|sumariza[r]?|sumarize|sintetiz[ae]r?|"
+    r"liste|listar|lista\s+(os|as|todos|todas)|"
+    r"t[óo]picos\s+(cobertos|abordados|principais|tratados)|"
+    r"todos\s+os\s+(t[óo]picos|pontos|assuntos|temas)|"
+    r"o\s+que\s+(o\s+)?(documento|texto|arquivo)\s+(aborda|trata|cobre|cont[eé]m)|"
+    r"do\s+que\s+(se\s+)?trata|"
+    r"vis[ãa]o\s+geral|overview|"
+    r"main\s+(topics|points)|summary|summarize|list\s+all)\b",
+    re.IGNORECASE,
+)
+
+
+def is_broad_query(query: str) -> bool:
+    """Detecta queries amplas tipo 'resumo'/'liste tópicos' que pedem cobertura
+    total do corpus, em vez de retrieval por similaridade.
+
+    Quando True, o nó de retrieve devolve todos os chunks (capped em
+    ``BROAD_QUERY_MAX_CHUNKS``) e o rerank vira pass-through. Resolve perda de
+    informação estrutural: top-k similarity sempre vê só uma fatia do doc,
+    insuficiente pra cobertura.
+    """
+    return bool(BROAD_QUERY_RE.search(query))
+
+
+BROAD_QUERY_MAX_CHUNKS = int(os.getenv("BROAD_QUERY_MAX_CHUNKS", "80"))
 
 
 def rerank(query: str, docs: list[Document], top_n: int = 3) -> list[tuple[Document, float]]:
@@ -373,12 +413,34 @@ def rerank(query: str, docs: list[Document], top_n: int = 3) -> list[tuple[Docum
 # ── LangGraph nodes ───────────────────────────────────────────────────────
 
 
-def make_retrieve_node(semantic_retriever: object, bm25_retriever: BM25Retriever):
-    """Cria o nó de retrieval híbrido: BM25 + semântico fundidos via RRF."""
+def make_retrieve_node(
+    semantic_retriever: object,
+    bm25_retriever: BM25Retriever,
+    all_chunks: list[Document],
+):
+    """Cria o nó de retrieval híbrido: BM25 + semântico fundidos via RRF.
+
+    Em queries amplas (``is_broad_query``), bypassa o retrieval por similaridade
+    e devolve todos os chunks indexados (capped em ``BROAD_QUERY_MAX_CHUNKS``)
+    pro LLM. Top-k similarity é fundamentalmente incompleto pra "resumo".
+    """
 
     def retrieve(state: RAGState) -> RAGState:
         t0 = time.perf_counter()
         query = state["query"]
+        if is_broad_query(query):
+            picked = all_chunks[:BROAD_QUERY_MAX_CHUNKS]
+            truncated = len(all_chunks) > BROAD_QUERY_MAX_CHUNKS
+            dt_ms = (time.perf_counter() - t0) * 1000
+            logger.info(
+                "retrieve broad=True query=%r chunks=%d total=%d truncated=%s latency_ms=%.1f",
+                query[:80],
+                len(picked),
+                len(all_chunks),
+                truncated,
+                dt_ms,
+            )
+            return {**state, "retrieved_docs": picked, "broad": True}
         semantic = semantic_retriever.invoke(query)  # type: ignore[union-attr]
         keyword = bm25_retriever.invoke(query)
         fused = reciprocal_rank_fusion([semantic, keyword])
@@ -391,17 +453,24 @@ def make_retrieve_node(semantic_retriever: object, bm25_retriever: BM25Retriever
             len(fused),
             dt_ms,
         )
-        return {**state, "retrieved_docs": fused}
+        return {**state, "retrieved_docs": fused, "broad": False}
 
     return retrieve
 
 
 def rerank_node(state: RAGState) -> RAGState:
-    """Nó de re-ranking: cross-encoder sobre os candidatos fundidos."""
+    """Nó de re-ranking: cross-encoder sobre os candidatos fundidos.
+
+    Em modo broad (cobertura total pedida pela query), vira pass-through:
+    mantém ordem do retrieve e score 0.0. Top-N cut destruiria a cobertura.
+    """
     t0 = time.perf_counter()
     query = state["query"]
     in_docs = state["retrieved_docs"]
-    pairs = rerank(query, in_docs, top_n=5)
+    if state.get("broad"):
+        pairs = [(d, 0.0) for d in in_docs]
+    else:
+        pairs = rerank(query, in_docs, top_n=5)
     reranked = [d for d, _ in pairs]
     sources_struct = [
         {
@@ -421,6 +490,15 @@ def rerank_node(state: RAGState) -> RAGState:
         len(reranked),
         dt_ms,
     )
+    log_cap = 10
+    for i, (d, s) in enumerate(pairs[:log_cap]):
+        src = Path(d.metadata.get("source", "")).name or "unknown"
+        page = d.metadata.get("page")
+        page_part = f" p={page}" if page is not None else ""
+        snippet = " ".join(d.page_content.split())[:220]
+        logger.info("rerank[%d] score=%.3f src=%s%s chars=%d :: %s", i + 1, s, src, page_part, len(d.page_content), snippet)
+    if len(pairs) > log_cap:
+        logger.info("rerank[...] omitting %d more chunks in log", len(pairs) - log_cap)
     return {**state, "reranked_docs": reranked, "sources_struct": sources_struct}
 
 
@@ -454,6 +532,9 @@ def make_generate_node(llm: BaseChatModel):
             len(answer) if isinstance(answer, str) else 0,
             dt_ms,
         )
+        if isinstance(answer, str):
+            preview = " ".join(answer.split())[:500]
+            logger.info("answer :: %s", preview)
         return {**state, "answer": answer}
 
     return generate
@@ -478,13 +559,13 @@ def build_rag_graph(
     Returns:
         Grafo compilado pronto para invoke/stream.
     """
-    semantic, bm25 = build_retrievers(
+    semantic, bm25, chunks = build_retrievers(
         documents, collection_name=collection_name, qdrant_url=qdrant_url
     )
     llm = build_llm()
 
     graph = StateGraph(RAGState)
-    graph.add_node("retrieve", make_retrieve_node(semantic, bm25))
+    graph.add_node("retrieve", make_retrieve_node(semantic, bm25, chunks))
     graph.add_node("rerank", rerank_node)
     graph.add_node("generate", make_generate_node(llm))
 

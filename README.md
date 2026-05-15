@@ -44,8 +44,8 @@ graph LR
 
 | Nó | O que faz | Por que importa |
 |---|---|---|
-| **retrieve** | BM25 + embeddings multilíngues, fundidos via Reciprocal Rank Fusion. Para `.md`, splitter preserva H1/H2/H3 antes de chunking. | Embeddings cobrem semântica; BM25 captura siglas/IDs literais. RRF combina sem hiperparâmetros. |
-| **rerank** | Cross-encoder FlashRank reordena candidatos. Cai pro top-N do RRF se score abaixo do threshold ou sem FlashRank instalado. | Reordenação contextual reduz alucinação. Threshold evita amplificar ruído quando o reranker está fora da distribuição de treino. |
+| **retrieve** | BM25 + embeddings multilíngues, fundidos via Reciprocal Rank Fusion. Para `.md`, splitter preserva H1/H2/H3 antes de chunking. Em queries amplas (`resumo`, `liste tópicos`, `do que trata`), bypassa a busca por similaridade e devolve todos os chunks (capped em `BROAD_QUERY_MAX_CHUNKS`). | Embeddings cobrem semântica; BM25 captura siglas/IDs literais. RRF combina sem hiperparâmetros. Top-k similarity é incompleto pra "resumo"; o bypass evita perda estrutural de informação em queries de cobertura. |
+| **rerank** | Cross-encoder FlashRank reordena candidatos. Cai pro top-N do RRF se score abaixo do threshold ou sem FlashRank instalado. Em modo broad, vira pass-through (mantém ordem do retrieve, sem cortar). | Reordenação contextual reduz alucinação. Threshold evita amplificar ruído quando o reranker está fora da distribuição de treino. Pass-through em broad preserva cobertura total. |
 | **generate** | Prompt grounded + citações `[N]` referenciando os documentos. | Resposta ancorada no contexto, IDs rastreáveis até as fontes na UI. |
 
 ---
@@ -167,9 +167,10 @@ Env vars suportadas (defaults entre parênteses):
 ### Pipeline RAG
 | Variável | Default | Descrição |
 |---|---|---|
-| `EMBEDDING_MODEL` | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | Encoder semântico |
+| `EMBEDDING_MODEL` | `intfloat/multilingual-e5-small` | Encoder semântico |
 | `RERANKER_MODEL` | `ms-marco-MiniLM-L-12-v2` | Cross-encoder do FlashRank |
 | `FLASHRANK_CACHE_DIR` | `/tmp` | Cache dos pesos do reranker |
+| `BROAD_QUERY_MAX_CHUNKS` | `80` | Teto de chunks devolvidos no bypass de queries amplas. Limita prompt em docs muito longos. |
 
 ### Infra
 | Variável | Default | Descrição |
@@ -322,7 +323,10 @@ FAISS não tem servidor, não tem filtros, não escala horizontalmente. Qdrant r
 Modelos de embedding não capturam vocabulário exato (siglas, nomes próprios, IDs). BM25 captura. A fusão via Reciprocal Rank Fusion cobre os dois casos sem tuning de pesos.
 
 **Por que embeddings multilíngues por padrão?**
-O corpus alvo inclui PT-BR. O `MiniLM-L12-v2` multilingual cobre PT-BR e EN com qualidade próxima ao `MiniLM-L6-v2` monolíngue, ao custo de um modelo levemente maior (cabeçalho de ~120 MB em vez de ~80 MB). `EMBEDDING_MODEL` no `.env` reverte pro monolíngue se preferir.
+O corpus alvo inclui PT-BR. O `intfloat/multilingual-e5-small` cobre PT-BR e EN com qualidade competitiva e custo computacional baixo (~120 MB). O encoder recebe prefixos `query:` e `passage:` conforme treinamento — sem eles a qualidade do retrieval cai bastante. `EMBEDDING_MODEL` no `.env` permite trocar pra outro encoder se preferir.
+
+**Por que bypass do retrieval em queries amplas?**
+Top-k similarity ranqueia chunks pela proximidade com a query — funciona pra perguntas pontuais ("qual o MTBF típico?") mas é estruturalmente incompleto pra queries de cobertura ("faça um resumo"). Em doc de 60 chunks, o top-10 padrão deixa 50 chunks invisíveis ao LLM, e o resumo sai parcial. A solução é detectar a intenção (regex em verbos como `resumir`, `listar`, `tópicos cobertos`) e devolver todos os chunks indexados, capped em `BROAD_QUERY_MAX_CHUNKS` pra não saturar o contexto do LLM em corpora muito longos.
 
 **Por que confidence threshold no rerank?**
 Cross-encoder pode reordenar com baixa confiança quando a query está fora da distribuição de treino — e nesse regime a reordenação tende a piorar o ranking. Abaixo do threshold, o nó cai pro top-N do RRF.

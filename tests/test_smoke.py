@@ -80,9 +80,10 @@ def test_build_retrievers_accepts_documents() -> None:
         Document(page_content="A LangChain é um framework para LLMs."),
         Document(page_content="FAISS é uma biblioteca de busca vetorial."),
     ]
-    semantic, bm25 = app.build_retrievers(documents, collection_name="test")
+    semantic, bm25, chunks = app.build_retrievers(documents, collection_name="test")
     assert hasattr(semantic, "invoke")
     assert hasattr(bm25, "invoke")
+    assert isinstance(chunks, list) and len(chunks) >= 1
 
 
 def test_reciprocal_rank_fusion_basic() -> None:
