@@ -467,10 +467,7 @@ def rerank_node(state: RAGState) -> RAGState:
     t0 = time.perf_counter()
     query = state["query"]
     in_docs = state["retrieved_docs"]
-    if state.get("broad"):
-        pairs = [(d, 0.0) for d in in_docs]
-    else:
-        pairs = rerank(query, in_docs, top_n=5)
+    pairs = [(d, 0.0) for d in in_docs] if state.get("broad") else rerank(query, in_docs, top_n=5)
     reranked = [d for d, _ in pairs]
     sources_struct = [
         {
@@ -496,7 +493,15 @@ def rerank_node(state: RAGState) -> RAGState:
         page = d.metadata.get("page")
         page_part = f" p={page}" if page is not None else ""
         snippet = " ".join(d.page_content.split())[:220]
-        logger.info("rerank[%d] score=%.3f src=%s%s chars=%d :: %s", i + 1, s, src, page_part, len(d.page_content), snippet)
+        logger.info(
+            "rerank[%d] score=%.3f src=%s%s chars=%d :: %s",
+            i + 1,
+            s,
+            src,
+            page_part,
+            len(d.page_content),
+            snippet,
+        )
     if len(pairs) > log_cap:
         logger.info("rerank[...] omitting %d more chunks in log", len(pairs) - log_cap)
     return {**state, "reranked_docs": reranked, "sources_struct": sources_struct}
