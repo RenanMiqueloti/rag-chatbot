@@ -49,7 +49,7 @@ def _int_env(name: str, default: int) -> int:
 
 RATE_LIMIT_PER_MINUTE = _int_env("RATE_LIMIT_PER_MINUTE", 10)
 RATE_LIMIT_PER_HOUR = _int_env("RATE_LIMIT_PER_HOUR", 100)
-DAILY_REQUEST_CAP = _int_env("DAILY_REQUEST_CAP", 500)
+DAILY_REQUEST_CAP = _int_env("DAILY_REQUEST_CAP", 80)
 MAX_QUERY_CHARS = _int_env("MAX_QUERY_CHARS", 2000)
 
 _LIMITS = [f"{RATE_LIMIT_PER_MINUTE}/minute", f"{RATE_LIMIT_PER_HOUR}/hour"]

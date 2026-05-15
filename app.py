@@ -101,6 +101,14 @@ class EmptyDocumentError(ValueError):
     """Documento sem texto extraível — comum em PDFs escaneados (só imagens)."""
 
 
+class ProtectedDocumentError(ValueError):
+    """PDF protegido por senha ou corrompido."""
+
+
+class EncodingError(ValueError):
+    """Arquivo de texto em encoding diferente de UTF-8."""
+
+
 def load_documents_from_files(paths: list[str | Path]) -> list[Document]:
     """Lê .txt, .md e .pdf, retorna Documents prontos pra split.
 
@@ -112,19 +120,34 @@ def load_documents_from_files(paths: list[str | Path]) -> list[Document]:
 
     Raises:
         EmptyDocumentError: nenhum texto pôde ser extraído (PDF escaneado, doc vazio).
+        ProtectedDocumentError: PDF com senha ou corrompido.
+        EncodingError: TXT/MD em encoding não-UTF-8.
     """
     from langchain_community.document_loaders import PyPDFLoader, TextLoader
+    from pypdf.errors import PdfReadError
 
     documents: list[Document] = []
     for raw in paths:
         path = Path(raw)
         suffix = path.suffix.lower()
-        if suffix == ".pdf":
-            documents.extend(PyPDFLoader(str(path)).load())
-        elif suffix in {".txt", ".md"}:
-            documents.extend(TextLoader(str(path), encoding="utf-8").load())
-        else:
-            raise ValueError(f"Tipo de arquivo não suportado: {suffix} ({path})")
+        try:
+            if suffix == ".pdf":
+                documents.extend(PyPDFLoader(str(path)).load())
+            elif suffix in {".txt", ".md"}:
+                documents.extend(TextLoader(str(path), encoding="utf-8").load())
+            else:
+                raise ValueError(f"Tipo de arquivo não suportado: {suffix} ({path})")
+        except PdfReadError as exc:
+            raise ProtectedDocumentError(
+                f"PDF '{path.name}' está protegido por senha ou corrompido. "
+                "Remova a proteção antes do upload."
+            ) from exc
+        except UnicodeDecodeError as exc:
+            raise EncodingError(
+                f"Arquivo '{path.name}' não está em UTF-8 "
+                f"(detectado byte inválido em posição {exc.start}). "
+                "Reabra no editor e salve como UTF-8."
+            ) from exc
 
     # Filtra docs sem texto (páginas em branco, PDFs com só imagem).
     non_empty = [d for d in documents if d.page_content and d.page_content.strip()]
@@ -140,7 +163,33 @@ def load_documents_from_files(paths: list[str | Path]) -> list[Document]:
 # ── Indexing ──────────────────────────────────────────────────────────────
 
 
-DEFAULT_EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+DEFAULT_EMBEDDING_MODEL = "intfloat/multilingual-e5-small"
+
+
+def _build_embeddings(model_name: str):
+    """Cria o embedding apropriado. Modelos E5 precisam dos prefixos
+    'query: ' e 'passage: ' pra produzir embeddings com a distribuição que
+    foram treinados — sem isso, qualidade de retrieval cai significativamente.
+    """
+    from langchain_huggingface import HuggingFaceEmbeddings
+
+    base = HuggingFaceEmbeddings(model_name=model_name)
+    if "e5" not in model_name.lower():
+        return base
+
+    class _E5Embeddings:
+        """Wrapper que adiciona prefixos E5 antes de delegar."""
+
+        def __init__(self, inner):
+            self._inner = inner
+
+        def embed_documents(self, texts: list[str]) -> list[list[float]]:
+            return self._inner.embed_documents([f"passage: {t}" for t in texts])
+
+        def embed_query(self, text: str) -> list[float]:
+            return self._inner.embed_query(f"query: {text}")
+
+    return _E5Embeddings(base)
 
 
 def _header_prefix(meta: dict) -> str:
@@ -213,12 +262,10 @@ def build_retrievers(
     Returns:
         Tupla (semantic_retriever, bm25_retriever).
     """
-    from langchain_huggingface import HuggingFaceEmbeddings
-
     chunks = _split_documents(documents)
 
     embedding_model = os.getenv("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
-    embeddings = HuggingFaceEmbeddings(model_name=embedding_model)
+    embeddings = _build_embeddings(embedding_model)
 
     effective_url = qdrant_url
     if effective_url is None:

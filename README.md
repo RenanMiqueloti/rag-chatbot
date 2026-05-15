@@ -16,9 +16,15 @@ short_description: Demo de RAG com upload de documentos e citações
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.12-blue.svg)
 
-Pipeline RAG com LangGraph, Qdrant, hybrid retrieval (BM25 + dense + RRF), re-ranking via cross-encoder e tracing via LangSmith. Suporta Claude (Anthropic), GPT-4o-mini (OpenAI) e Llama 3.3 70B (Groq).
+Pipeline RAG com LangGraph, retrieval híbrido (BM25 + embeddings multilíngues + RRF), re-ranking com cross-encoder e confidence threshold, citações por documento e página, e API REST com rate limiting por IP + circuit breaker diário. Demo Gradio em Hugging Face Spaces. Suporta Claude (Anthropic), GPT-4o-mini (OpenAI) e Llama 3.3 70B (Groq).
 
-> Demo local autocontido — troque `QdrantClient(":memory:")` por `QdrantClient(url=...)` para um deploy real.
+> Demo local autocontido — `QdrantClient(":memory:")` por padrão. Configure `QDRANT_URL` para apontar pra um Qdrant dedicado.
+
+---
+
+## Demo
+
+Demo Gradio rodando em [Hugging Face Spaces](https://huggingface.co/spaces/RenanMiqueloti/rag-chatbot). Suba `.txt`, `.md` ou `.pdf` e pergunte sobre o conteúdo. As fontes aparecem com nome do arquivo, página (PDF) e score do cross-encoder.
 
 ---
 
@@ -27,9 +33,9 @@ Pipeline RAG com LangGraph, Qdrant, hybrid retrieval (BM25 + dense + RRF), re-ra
 ```mermaid
 graph LR
     A([Query]) --> B
-    B["retrieve\nBM25 + Semantic\nRRF Fusion"] --> C
-    C["rerank\nCross-encoder\nFlashRank"] --> D
-    D["generate\nClaude / GPT-4o-mini\ncom contexto"] --> E([Answer])
+    B["retrieve<br/>BM25 + Semantic<br/>RRF Fusion"] --> C
+    C["rerank<br/>Cross-encoder<br/>+ confidence threshold"] --> D
+    D["generate<br/>LLM com contexto<br/>+ citações [N]"] --> E([Answer])
 
     style B fill:#2d3748,color:#e2e8f0
     style C fill:#2d3748,color:#e2e8f0
@@ -38,42 +44,24 @@ graph LR
 
 | Nó | O que faz | Por que importa |
 |---|---|---|
-| **retrieve** | BM25 + semantic → Reciprocal Rank Fusion | Cobre tanto vocabulário exato (siglas, IDs) quanto similaridade semântica |
-| **rerank** | Cross-encoder FlashRank, fallback gracioso | Reordena candidatos com contexto da query — menos alucinação |
-| **generate** | Prompt grounded + Claude ou GPT-4o-mini | Responde apenas com o que está no contexto recuperado |
+| **retrieve** | BM25 + embeddings multilíngues, fundidos via Reciprocal Rank Fusion. Para `.md`, splitter preserva H1/H2/H3 antes de chunking. | Embeddings cobrem semântica; BM25 captura siglas/IDs literais. RRF combina sem hiperparâmetros. |
+| **rerank** | Cross-encoder FlashRank reordena candidatos. Cai pro top-N do RRF se score abaixo do threshold ou sem FlashRank instalado. | Reordenação contextual reduz alucinação. Threshold evita amplificar ruído quando o reranker está fora da distribuição de treino. |
+| **generate** | Prompt grounded + citações `[N]` referenciando os documentos. | Resposta ancorada no contexto, IDs rastreáveis até as fontes na UI. |
 
 ---
 
 ## Stack
 
-- **LangGraph** 0.4+ — orquestração do pipeline como grafo de estado
-- **Qdrant** (in-memory) — banco vetorial; substitua por instância dedicada num deploy real
-- **BM25** via `rank-bm25` — retrieval por vocabulário exato
-- **Reciprocal Rank Fusion** — fusão dos dois rankings sem parâmetros extras
-- **FlashRank** (opcional) — cross-encoder leve para re-ranking local
-- **FastAPI** — endpoint REST + streaming
-- **LangSmith** — tracing nativo LangGraph (node-by-node state diffs)
-- **Claude (Anthropic) / GPT-4o-mini / Llama 3.3 70B (Groq)** — provider configurável via `LLM_PROVIDER` env var
-- **LLM-as-judge evals** — avaliação automática de relevance, faithfulness, completeness
-
----
-
-## Estrutura
-
-```
-rag-chatbot/
-├── app.py             # Pipeline LangGraph: retrieve → rerank → generate
-├── api.py             # FastAPI: POST /query, POST /stream, GET /health
-├── evals/
-│   ├── evaluate.py    # Harness de evals com LLM-as-judge
-│   └── dataset.json   # Dataset de perguntas para regressão
-├── data/
-│   ├── sample_docs.txt
-│   └── example.md     # primer sobre RAG — bom corpus de partida pra demo
-├── .env.example
-├── requirements.txt
-└── LICENSE
-```
+- **LangGraph 0.4+** — orquestração do pipeline como grafo de estado
+- **Qdrant** — banco vetorial (in-memory por padrão, servidor via `QDRANT_URL`)
+- **sentence-transformers** — `paraphrase-multilingual-MiniLM-L12-v2` por padrão; override via `EMBEDDING_MODEL`
+- **rank-bm25** — retrieval por vocabulário exato
+- **Reciprocal Rank Fusion** — fusão BM25 + semântico sem tuning de pesos
+- **FlashRank** — cross-encoder leve para re-ranking local
+- **FastAPI + slowapi** — REST com streaming, rate limiting por IP, circuit breaker diário
+- **LangSmith** — tracing nativo do LangGraph (node-by-node state diffs)
+- **Gradio 6** — demo HF Spaces, sessão isolada, API desabilitada
+- **LLM-as-judge evals** — relevance, faithfulness, completeness
 
 ---
 
@@ -82,43 +70,81 @@ rag-chatbot/
 ```bash
 git clone https://github.com/RenanMiqueloti/rag-chatbot.git
 cd rag-chatbot
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # configure LLM_PROVIDER, API keys e LangSmith
+cp .env.example .env   # configure LLM_PROVIDER e a key correspondente
 ```
 
-**CLI:**
+**CLI interativa:**
 ```bash
-python app.py
+python3 app.py
 ```
 
-**API REST:**
+**API REST (FastAPI):**
 ```bash
 uvicorn api:app --reload
-# POST http://localhost:8000/query  {"query": "..."}
-# POST http://localhost:8000/stream {"query": "..."}
+# POST http://localhost:8000/query   {"query": "..."}
+# POST http://localhost:8000/stream  {"query": "..."}
+# GET  http://localhost:8000/health
 ```
 
-**Evals:**
+**Demo Gradio local:**
 ```bash
-python -m evals.evaluate
+python3 gradio_app.py    # http://localhost:7860
+```
+
+**Evals (LLM-as-judge):**
+```bash
+python3 -m evals.evaluate
 ```
 
 ---
 
-## Demo online
+## Demo Gradio em Hugging Face Spaces
 
-Demo Gradio rodando em Hugging Face Spaces — URL será publicada após o deploy.
+Construída com `Dockerfile.spaces` (SDK Docker, porta 7860). Sessão isolada por usuário: documentos vivem só na sessão e somem em qualquer restart do Space.
 
-Limitações da demo:
+**Limites por sessão:**
 
-- 3 arquivos por sessão, até 5 MB cada (`.txt`, `.md`, `.pdf`)
-- 30 perguntas por sessão (acumulado — não reseta ao re-upload)
-- 3 indexações por sessão
-- Documentos não são persistidos entre sessões ou restarts do Space
+- 3 arquivos, até 5 MB cada (`.txt`, `.md`, `.pdf`)
+- 30 perguntas (acumulado — não reseta ao re-upload)
+- 3 indexações
 
-Sem corpus próprio? `data/example.md` neste repo é um primer curto sobre RAG e
-serve como ponto de partida — baixe e suba na demo.
+**API bloqueada:** todos os event handlers usam `api_name=False` e o launch passa `footer_links=["gradio"]`. Sem link "Use via API", sem modal de Configurações. A demo só responde via UI.
+
+Sem corpus próprio? `data/example.md` neste repo é um primer curto sobre RAG — baixe e suba.
+
+---
+
+## API REST
+
+`api.py` expõe:
+
+| Endpoint | Método | Descrição |
+|---|---|---|
+| `/query` | POST | RAG single-shot. Retorna resposta + fontes citadas. |
+| `/stream` | POST | RAG com streaming token a token (SSE). |
+| `/health` | GET | Healthcheck pra Docker (verifica provider configurado). |
+
+### Rate limiting
+
+Duas camadas independentes, configuráveis via env:
+
+**Por IP** (slowapi, in-memory):
+- `RATE_LIMIT_PER_MINUTE=10` (default)
+- `RATE_LIMIT_PER_HOUR=100` (default)
+
+Excedente retorna `429 Too Many Requests`.
+
+**Global diário** (`DailyRequestBudget`, circuit breaker):
+- `DAILY_REQUEST_CAP=500` (default; `0` desativa)
+
+Protege a cota diária do provider quando muitos IPs distintos consomem em paralelo (que slowapi por IP não cobre). Reseta em meia-noite UTC. Excedente retorna `429` com mensagem indicando cota diária.
+
+**Validação de entrada:**
+- `MAX_QUERY_CHARS=2000` — Pydantic rejeita com `422 Unprocessable Entity`.
+
+A heurística `is_rate_limit` (em `rate_limits.py`) é reutilizada pelo Gradio pra detectar 429 do provider upstream e transformar em mensagem amigável.
 
 ---
 
@@ -134,6 +160,45 @@ Configure `LLM_PROVIDER` no `.env`:
 
 ---
 
+## Configuração
+
+Env vars suportadas (defaults entre parênteses):
+
+### Pipeline RAG
+| Variável | Default | Descrição |
+|---|---|---|
+| `EMBEDDING_MODEL` | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | Encoder semântico |
+| `RERANKER_MODEL` | `ms-marco-MiniLM-L-12-v2` | Cross-encoder do FlashRank |
+| `FLASHRANK_CACHE_DIR` | `/tmp` | Cache dos pesos do reranker |
+
+### Infra
+| Variável | Default | Descrição |
+|---|---|---|
+| `QDRANT_URL` | _(vazio)_ | URL do Qdrant; vazio força in-memory |
+| `QDRANT_API_KEY` | _(vazio)_ | Auth do Qdrant Cloud / instância protegida |
+
+### Rate limiting (api.py)
+| Variável | Default | Descrição |
+|---|---|---|
+| `RATE_LIMIT_PER_MINUTE` | `10` | slowapi por IP |
+| `RATE_LIMIT_PER_HOUR` | `100` | slowapi por IP |
+| `DAILY_REQUEST_CAP` | `500` | Circuit breaker global; `0` desativa |
+| `MAX_QUERY_CHARS` | `2000` | Tamanho máximo da query (Pydantic) |
+
+### Observabilidade
+| Variável | Default | Descrição |
+|---|---|---|
+| `LANGCHAIN_TRACING_V2` | `false` | Ativa LangSmith |
+| `LANGSMITH_API_KEY` | _(vazio)_ | Chave do LangSmith |
+| `LANGSMITH_PROJECT` | `rag-chatbot` | Nome do projeto |
+
+### Gradio
+| Variável | Default | Descrição |
+|---|---|---|
+| `GRADIO_SERVER_PORT` | `7860` | Porta do servidor da demo |
+
+---
+
 ## Observabilidade — LangSmith
 
 Configure no `.env`:
@@ -144,7 +209,8 @@ LANGSMITH_API_KEY=lsv2_...
 LANGSMITH_PROJECT=rag-chatbot
 ```
 
-Com tracing ativo, cada execução do pipeline registra no LangSmith:
+Com tracing ativo, cada execução do pipeline registra:
+
 - Inputs e outputs de cada nó (retrieve → rerank → generate)
 - Documentos recuperados e re-rankeados
 - Prompt final enviado ao LLM
@@ -152,57 +218,28 @@ Com tracing ativo, cada execução do pipeline registra no LangSmith:
 
 ---
 
-## Re-ranking (FlashRank)
+## Docker Compose
 
-`flashrank` já vem em `requirements.txt`. Se você remover, o nó `rerank` cai
-num fallback que apenas trunca os top-3 do RRF — o pipeline continua funcionando,
-mas sem cross-encoder reordenando.
-
----
-
-## Qdrant servidor (deploy real)
-
-Sem `QDRANT_URL` definido, o pipeline cai em in-memory (sem persistência).
-Pra apontar para um Qdrant rodando, configure no `.env`:
-
-```env
-QDRANT_URL=http://localhost:6333
-# QDRANT_API_KEY=...   # se a instância exigir auth
-```
-
-A função `build_retrievers(documents, qdrant_url=...)` também aceita override
-explícito (`""` força in-memory mesmo com env definido — usado pela demo Gradio).
-
----
-
-## Deploy via Docker Compose
-
-O repositório inclui `Dockerfile` + `docker-compose.yml` pra subir a API junto com um Qdrant dedicado.
-
-### Subir o stack
+`docker-compose.yml` sobe a API junto com um Qdrant dedicado.
 
 ```bash
 cp .env.example .env       # preencha a key do provider escolhido
 docker compose up -d --build
 ```
 
-### Serviços
-
 | Serviço | URL | Volume |
 |---|---|---|
 | API (FastAPI) | http://localhost:8000 | — |
-| Qdrant (REST + gRPC) | http://localhost:6333 / :6334 | `qdrant_data` |
+| Qdrant (REST + gRPC) | http://localhost:6333 / `:6334` | `qdrant_data` |
 
 A API tem `HEALTHCHECK` em `GET /health` (intervalo 30s, timeout 5s, 3 retries).
-
-### Encerrar e limpar volumes
 
 ```bash
 docker compose down            # mantém volumes (estado persiste)
 docker compose down -v         # apaga volumes (reset completo)
 ```
 
-### Rodar só o serviço de API (sem Qdrant dedicado)
+### Rodar só a API (sem Qdrant dedicado)
 
 ```bash
 docker build -t rag-chatbot:local .
@@ -213,9 +250,9 @@ docker run --rm -p 8000:8000 \
 
 Nesse modo o pipeline cai no `QdrantClient(":memory:")` e funciona standalone.
 
-### Demo Gradio (Hugging Face Spaces)
+### Imagem do HF Spaces
 
-A imagem `Dockerfile.spaces` empacota o `gradio_app.py` para rodar no Hugging Face Spaces (Docker SDK, porta 7860). Local:
+`Dockerfile.spaces` empacota o `gradio_app.py` (Docker SDK, porta 7860). Pra rodar local:
 
 ```bash
 docker build -f Dockerfile.spaces -t rag-chatbot:spaces .
@@ -225,11 +262,50 @@ docker run --rm -p 7860:7860 \
   rag-chatbot:spaces
 ```
 
-Sem Docker:
+---
+
+## Evals — LLM-as-judge
+
+`evals/evaluate.py` roda contra `evals/dataset.json` e avalia cada resposta em três dimensões:
+
+| Métrica | O que mede |
+|---|---|
+| **Relevance** | Resposta endereça a pergunta? |
+| **Faithfulness** | Resposta está grounded no contexto recuperado (sem alucinação)? |
+| **Completeness** | Cobre todos os aspectos da pergunta? |
 
 ```bash
-pip install -r requirements.txt
-python gradio_app.py
+python3 -m evals.evaluate
+```
+
+Output: scores por pergunta + média agregada. Útil pra regressão quando você troca embeddings, reranker, prompt ou modelo.
+
+---
+
+## Estrutura
+
+```
+rag-chatbot/
+├── app.py              # Pipeline LangGraph: retrieve → rerank → generate
+├── api.py              # FastAPI: /query, /stream, /health + rate limiting
+├── gradio_app.py       # Demo Gradio (HF Spaces)
+├── rate_limits.py      # is_rate_limit helper + DailyRequestBudget
+├── evals/
+│   ├── evaluate.py     # Harness LLM-as-judge
+│   └── dataset.json    # Dataset de regressão
+├── data/
+│   ├── sample_docs.txt
+│   └── example.md      # Primer sobre RAG, bom corpus de partida
+├── tests/
+│   └── test_smoke.py   # Smoke tests do pipeline e da API
+├── docs/img/           # Screenshots da demo
+├── Dockerfile          # Imagem da API REST
+├── Dockerfile.spaces   # Imagem da demo Gradio (HF Spaces)
+├── docker-compose.yml  # API + Qdrant local
+├── pyproject.toml
+├── requirements.txt
+├── .env.example
+└── LICENSE
 ```
 
 ---
@@ -242,11 +318,29 @@ O grafo de estado torna cada etapa auditável e substituível independentemente.
 **Por que Qdrant e não FAISS?**
 FAISS não tem servidor, não tem filtros, não escala horizontalmente. Qdrant resolve os três. O modo in-memory mantém a DX de desenvolvimento sem dependência externa.
 
-**Por que BM25 + semântico?**
-Modelos de embedding não capturam vocabulário exato (siglas, nomes próprios, IDs). BM25 captura. A fusão via RRF cobre os dois casos sem tuning de pesos.
+**Por que BM25 + semântico via RRF?**
+Modelos de embedding não capturam vocabulário exato (siglas, nomes próprios, IDs). BM25 captura. A fusão via Reciprocal Rank Fusion cobre os dois casos sem tuning de pesos.
+
+**Por que embeddings multilíngues por padrão?**
+O corpus alvo inclui PT-BR. O `MiniLM-L12-v2` multilingual cobre PT-BR e EN com qualidade próxima ao `MiniLM-L6-v2` monolíngue, ao custo de um modelo levemente maior (cabeçalho de ~120 MB em vez de ~80 MB). `EMBEDDING_MODEL` no `.env` reverte pro monolíngue se preferir.
+
+**Por que confidence threshold no rerank?**
+Cross-encoder pode reordenar com baixa confiança quando a query está fora da distribuição de treino — e nesse regime a reordenação tende a piorar o ranking. Abaixo do threshold, o nó cai pro top-N do RRF.
+
+**Por que duas camadas de rate limiting?**
+slowapi por IP cobre abuso de um único cliente. `DailyRequestBudget` protege a cota diária do provider LLM quando muitos IPs distintos consomem em paralelo (o free tier do Groq/OpenAI tem cap global que slowapi por IP não vê).
+
+**Por que API desabilitada no Gradio?**
+O Gradio expõe por default cada event handler como endpoint REST (`/api/predict/*`) e um link "Use via API" no rodapé. Pra uma demo pública, isso permite contornar os limites de sessão por código. `api_name=False` em cada handler + `footer_links=["gradio"]` no launch fecham essa via.
 
 **Por que LangSmith e não logging manual?**
 LangSmith tem integração nativa com LangGraph: cada nó do grafo vira um span rastreado automaticamente, com state diffs e latência por nó, sem instrumentação extra no código.
 
 **Por que LLM-as-judge?**
-Métricas clássicas como ROUGE e BLEU não capturam faithfulness (resposta grounded no contexto recuperado). LLM-as-judge com prompts estruturados serve como aproximação razoável quando não há ground truth de fact-checking.
+Métricas clássicas (ROUGE, BLEU) não capturam faithfulness (resposta grounded no contexto). LLM-as-judge com prompts estruturados serve como aproximação razoável quando não há ground truth de fact-checking.
+
+---
+
+## License
+
+MIT — ver [`LICENSE`](LICENSE).
