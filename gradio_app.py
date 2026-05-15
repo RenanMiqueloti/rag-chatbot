@@ -500,5 +500,8 @@ def _build_app():
 if __name__ == "__main__":
     import uvicorn
 
-    port = int(os.getenv("GRADIO_SERVER_PORT", "7860"))
-    uvicorn.run(_build_app(), host="0.0.0.0", port=port, log_level="info")
+    # HF Spaces (Docker SDK) injeta GRADIO_SERVER_PORT=8000 em runtime,
+    # sobrepondo o ENV do Dockerfile. Pra manter a porta alinhada com o
+    # ``app_port`` do README YAML (7860) e o EXPOSE do Dockerfile,
+    # hardcoda. Pra rodar local em outra porta, edita esta linha.
+    uvicorn.run(_build_app(), host="0.0.0.0", port=7860, log_level="info")
