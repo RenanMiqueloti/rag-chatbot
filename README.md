@@ -120,7 +120,7 @@ Construída com `Dockerfile.spaces` (SDK Docker, porta 7860). Sessão isolada po
 
 Não defende contra atacante motivado (proxies residenciais, IPv6, restart reseta contadores). Cobre abuso casual: scripts rasteiros, abas anônimas em rajada, Tor exits comuns.
 
-**API bloqueada:** todos os event handlers usam `api_name=False` e o launch passa `footer_links=["gradio"]`. Sem link "Use via API", sem modal de Configurações. A demo só responde via UI.
+**API bloqueada:** todos os event handlers usam `api_name=False` e o mount passa `footer_links=["gradio"]`. Sem link "Use via API", sem modal de Configurações. A demo só responde via UI.
 
 Sem corpus próprio? `data/example.md` neste repo é um primer curto sobre RAG — baixe e suba.
 
@@ -181,6 +181,7 @@ Env vars suportadas (defaults entre parênteses):
 | `RERANKER_MODEL` | `ms-marco-MiniLM-L-12-v2` | Cross-encoder do FlashRank |
 | `FLASHRANK_CACHE_DIR` | `/tmp` | Cache dos pesos do reranker |
 | `BROAD_QUERY_MAX_CHUNKS` | `40` | Teto de chunks devolvidos no bypass de queries amplas. Limita prompt em docs muito longos e preserva quota Groq na demo pública. |
+| `RAG_VERBOSE_LOGS` | `false` | Em `true` loga texto de query, snippet de chunks e preview de respostas. **Mantenha `false` em prod** — conteúdo de usuário não deve persistir em logs do Space. |
 
 ### Infra
 | Variável | Default | Descrição |

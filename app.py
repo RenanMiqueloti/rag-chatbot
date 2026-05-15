@@ -268,13 +268,16 @@ def build_retrievers(
     for d in documents:
         src = Path(d.metadata.get("source", "")).name or "unknown"
         sources_summary[src] = sources_summary.get(src, 0) + 1
-    logger.info(
-        "index docs=%d sources=%s chunks=%d sample_chunk_chars=%s",
-        len(documents),
-        sources_summary,
-        len(chunks),
-        [len(c.page_content) for c in chunks[:5]],
-    )
+    if RAG_VERBOSE_LOGS:
+        logger.info(
+            "index docs=%d sources=%s chunks=%d sample_chunk_chars=%s",
+            len(documents),
+            sources_summary,
+            len(chunks),
+            [len(c.page_content) for c in chunks[:5]],
+        )
+    else:
+        logger.info("index docs=%d chunks=%d", len(documents), len(chunks))
 
     embedding_model = os.getenv("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
     embeddings = _build_embeddings(embedding_model)
@@ -372,6 +375,20 @@ def is_broad_query(query: str) -> bool:
 BROAD_QUERY_MAX_CHUNKS = int(os.getenv("BROAD_QUERY_MAX_CHUNKS", "40"))
 
 
+# Em prod (default ``false``), logs não carregam texto de query, resposta,
+# snippet de chunk nem nomes de arquivos enviados. Só metadados (latência,
+# contagens, scores). Ative localmente com ``RAG_VERBOSE_LOGS=true`` no
+# .env quando precisar inspecionar o pipeline.
+RAG_VERBOSE_LOGS = os.getenv("RAG_VERBOSE_LOGS", "false").lower() in {"1", "true", "yes"}
+
+
+def _log_query(query: str) -> str:
+    """Token de log pra query do usuário. Em prod (default) só vai o tamanho —
+    o texto da pergunta pode conter PII e não deve persistir em logs do Space.
+    """
+    return repr(query[:80]) if RAG_VERBOSE_LOGS else f"<{len(query)} chars>"
+
+
 def rerank(query: str, docs: list[Document], top_n: int = 3) -> list[tuple[Document, float]]:
     """Re-rank documentos com cross-encoder (FlashRank), com fallback gracioso.
 
@@ -433,8 +450,8 @@ def make_retrieve_node(
             truncated = len(all_chunks) > BROAD_QUERY_MAX_CHUNKS
             dt_ms = (time.perf_counter() - t0) * 1000
             logger.info(
-                "retrieve broad=True query=%r chunks=%d total=%d truncated=%s latency_ms=%.1f",
-                query[:80],
+                "retrieve broad=True query=%s chunks=%d total=%d truncated=%s latency_ms=%.1f",
+                _log_query(query),
                 len(picked),
                 len(all_chunks),
                 truncated,
@@ -446,8 +463,8 @@ def make_retrieve_node(
         fused = reciprocal_rank_fusion([semantic, keyword])
         dt_ms = (time.perf_counter() - t0) * 1000
         logger.info(
-            "retrieve query=%r semantic=%d bm25=%d fused=%d latency_ms=%.1f",
-            query[:80],
+            "retrieve query=%s semantic=%d bm25=%d fused=%d latency_ms=%.1f",
+            _log_query(query),
             len(semantic),
             len(keyword),
             len(fused),
@@ -481,29 +498,30 @@ def rerank_node(state: RAGState) -> RAGState:
     ]
     dt_ms = (time.perf_counter() - t0) * 1000
     logger.info(
-        "rerank query=%r in=%d out=%d latency_ms=%.1f",
-        query[:80],
+        "rerank query=%s in=%d out=%d latency_ms=%.1f",
+        _log_query(query),
         len(in_docs),
         len(reranked),
         dt_ms,
     )
-    log_cap = 10
-    for i, (d, s) in enumerate(pairs[:log_cap]):
-        src = Path(d.metadata.get("source", "")).name or "unknown"
-        page = d.metadata.get("page")
-        page_part = f" p={page}" if page is not None else ""
-        snippet = " ".join(d.page_content.split())[:220]
-        logger.info(
-            "rerank[%d] score=%.3f src=%s%s chars=%d :: %s",
-            i + 1,
-            s,
-            src,
-            page_part,
-            len(d.page_content),
-            snippet,
-        )
-    if len(pairs) > log_cap:
-        logger.info("rerank[...] omitting %d more chunks in log", len(pairs) - log_cap)
+    if RAG_VERBOSE_LOGS:
+        log_cap = 10
+        for i, (d, s) in enumerate(pairs[:log_cap]):
+            src = Path(d.metadata.get("source", "")).name or "unknown"
+            page = d.metadata.get("page")
+            page_part = f" p={page}" if page is not None else ""
+            snippet = " ".join(d.page_content.split())[:220]
+            logger.info(
+                "rerank[%d] score=%.3f src=%s%s chars=%d :: %s",
+                i + 1,
+                s,
+                src,
+                page_part,
+                len(d.page_content),
+                snippet,
+            )
+        if len(pairs) > log_cap:
+            logger.info("rerank[...] omitting %d more chunks in log", len(pairs) - log_cap)
     return {**state, "reranked_docs": reranked, "sources_struct": sources_struct}
 
 
@@ -531,13 +549,13 @@ def make_generate_node(llm: BaseChatModel):
         dt_ms = (time.perf_counter() - t0) * 1000
         answer = response.content
         logger.info(
-            "generate query=%r docs=%d answer_chars=%d latency_ms=%.1f",
-            query[:80],
+            "generate query=%s docs=%d answer_chars=%d latency_ms=%.1f",
+            _log_query(query),
             len(state["reranked_docs"]),
             len(answer) if isinstance(answer, str) else 0,
             dt_ms,
         )
-        if isinstance(answer, str):
+        if RAG_VERBOSE_LOGS and isinstance(answer, str):
             preview = " ".join(answer.split())[:500]
             logger.info("answer :: %s", preview)
         return {**state, "answer": answer}

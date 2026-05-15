@@ -431,7 +431,15 @@ def _fetch_tor_exit_nodes(url: str = TOR_EXIT_LIST_URL, timeout: float = 5.0) ->
 
 
 class _IPRateLimiter:
-    """Rate limiter in-memory por IP, janela deslizante. Stdlib only."""
+    """Rate limiter in-memory por IP, janela deslizante. Stdlib only.
+
+    Faz GC periódico das chaves cujo histórico está totalmente fora da
+    janela horária, pra que um container long-lived (raro mas possível)
+    não acumule entradas indefinidamente.
+    """
+
+    GC_INTERVAL_SECONDS = 600
+    GC_KEY_THRESHOLD = 1000
 
     def __init__(self, per_minute: int, per_hour: int):
         from collections import defaultdict, deque
@@ -441,10 +449,23 @@ class _IPRateLimiter:
         self.per_hour = per_hour
         self._hits: dict[str, deque] = defaultdict(deque)
         self._lock = Lock()
+        self._last_gc = time.monotonic()
+
+    def _maybe_gc(self, now: float) -> None:
+        if len(self._hits) < self.GC_KEY_THRESHOLD:
+            return
+        if now - self._last_gc < self.GC_INTERVAL_SECONDS:
+            return
+        cutoff = now - 3600
+        stale = [k for k, hist in self._hits.items() if not hist or hist[-1] < cutoff]
+        for k in stale:
+            del self._hits[k]
+        self._last_gc = now
 
     def try_consume(self, ip: str) -> bool:
         now = time.monotonic()
         with self._lock:
+            self._maybe_gc(now)
             hist = self._hits[ip]
             cutoff_hour = now - 3600
             while hist and hist[0] < cutoff_hour:
