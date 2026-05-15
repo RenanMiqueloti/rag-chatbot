@@ -19,7 +19,9 @@ from uuid import uuid4
 
 import gradio as gr
 
-from app import build_rag_graph, load_documents_from_files
+from app import EmptyDocumentError, build_rag_graph, load_documents_from_files
+from rate_limits import RATE_LIMIT_MSG as _SHARED_RATE_LIMIT_MSG
+from rate_limits import is_rate_limit as _shared_is_rate_limit
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,13 +40,68 @@ QUOTA_INDEX_MSG = (
     f"Limite de {MAX_INDEX_OPERATIONS_PER_SESSION} indexações por sessão atingido. "
     "Recarregue a página pra recomeçar."
 )
-RATE_LIMIT_MSG = "Limite de requisições do provider atingido. Tente em ~1 minuto."
+RATE_LIMIT_MSG = _SHARED_RATE_LIMIT_MSG
 NO_STATE_MSG = "Envie documentos primeiro."
 
 
+THEME = gr.themes.Soft(
+    primary_hue=gr.themes.colors.indigo,
+    secondary_hue=gr.themes.colors.purple,
+    neutral_hue=gr.themes.colors.slate,
+    font=[gr.themes.GoogleFont("Inter"), "system-ui", "sans-serif"],
+    font_mono=[gr.themes.GoogleFont("JetBrains Mono"), "Menlo", "monospace"],
+).set(
+    body_background_fill="*neutral_50",
+    block_background_fill="white",
+    block_border_width="1px",
+    block_radius="14px",
+    button_primary_background_fill="*primary_600",
+    button_primary_background_fill_hover="*primary_700",
+    button_primary_text_color="white",
+)
+
+CSS = """
+.gradio-container { max-width: 1200px !important; margin: 0 auto !important; }
+#hero { padding: 4px 0 16px; }
+#hero h1 { margin: 0 0 4px; font-weight: 600; letter-spacing: -0.01em; font-size: 1.5rem; }
+#hero p { margin: 0; color: var(--body-text-color-subdued); }
+.message { padding: 14px 16px !important; line-height: 1.6 !important; }
+"""
+
+HERO_HTML = """
+<div id="hero">
+  <h1>rag-chatbot · demo</h1>
+  <p>Pipeline RAG com LangGraph + Qdrant + BM25 + RRF + cross-encoder rerank.</p>
+</div>
+"""
+
+CHAT_PLACEHOLDER = (
+    "Suba documentos no painel ao lado e pergunte sobre o conteúdo.\n\n"
+    "Sem corpus próprio? `data/example.md` no repo é um primer curto sobre RAG."
+)
+
+_CHIP_PALETTE = {
+    "neutral": ("#e0e7ff", "#3730a3"),
+    "ready": ("#dcfce7", "#15803d"),
+    "active": ("#fef3c7", "#a16207"),
+    "error": ("#fee2e2", "#b91c1c"),
+}
+
+
+def _status_chip(text: str, kind: str = "neutral") -> str:
+    bg, fg = _CHIP_PALETTE.get(kind, _CHIP_PALETTE["neutral"])
+    return (
+        f'<div style="display:inline-flex;align-items:center;gap:8px;'
+        f"padding:8px 14px;border-radius:999px;background:{bg};color:{fg};"
+        f'font-weight:500;font-size:14px;">{text}</div>'
+    )
+
+
+INITIAL_STATUS = _status_chip("Envie documentos para começar.", "neutral")
+
+
 def _is_rate_limit(exc: BaseException) -> bool:
-    s = f"{type(exc).__name__} {exc!s}".lower()
-    return "ratelimit" in s or "rate_limit" in s or "429" in s
+    return _shared_is_rate_limit(exc)
 
 
 def index_files(files, current_state):
@@ -55,32 +112,38 @@ def index_files(files, current_state):
     indexações é capado por ``MAX_INDEX_OPERATIONS_PER_SESSION``.
     """
     if not files:
-        return current_state, "Envie ao menos um arquivo (.txt, .md ou .pdf)."
+        return current_state, _status_chip(
+            "Envie ao menos um arquivo (.txt, .md ou .pdf).", "error"
+        )
 
     uploads_done = (current_state or {}).get("uploads", 0)
     if uploads_done >= MAX_INDEX_OPERATIONS_PER_SESSION:
-        return current_state, QUOTA_INDEX_MSG
+        return current_state, _status_chip(QUOTA_INDEX_MSG, "error")
 
     if len(files) > MAX_FILES_PER_SESSION:
-        return current_state, (
-            f"Máximo de {MAX_FILES_PER_SESSION} arquivos por sessão (enviou {len(files)})."
+        return current_state, _status_chip(
+            f"Máximo de {MAX_FILES_PER_SESSION} arquivos por sessão (enviou {len(files)}).",
+            "error",
         )
 
     for f in files:
         try:
             size_mb = os.path.getsize(f.name) / (1024 * 1024)
         except OSError as exc:
-            return current_state, f"Erro lendo {Path(f.name).name}: {exc}"
+            return current_state, _status_chip(f"Erro lendo {Path(f.name).name}: {exc}", "error")
         if size_mb > MAX_FILE_SIZE_MB:
-            return current_state, (
-                f"{Path(f.name).name} excede {MAX_FILE_SIZE_MB} MB ({size_mb:.1f} MB)."
+            return current_state, _status_chip(
+                f"{Path(f.name).name} excede {MAX_FILE_SIZE_MB} MB ({size_mb:.1f} MB).",
+                "error",
             )
 
     try:
         paths = [f.name for f in files]
         documents = load_documents_from_files(paths)
+    except EmptyDocumentError as exc:
+        return current_state, _status_chip(str(exc), "error")
     except Exception as exc:
-        return current_state, f"Erro ao ler arquivos: {exc}"
+        return current_state, _status_chip(f"Erro ao ler arquivos: {exc}", "error")
 
     if current_state and current_state.get("id"):
         session_id = current_state["id"]
@@ -94,7 +157,7 @@ def index_files(files, current_state):
         # (a demo é efêmera; não escreve num Qdrant compartilhado).
         graph = build_rag_graph(documents, collection_name=collection_name, qdrant_url="")
     except Exception as exc:
-        return current_state, f"Erro ao indexar: {exc}"
+        return current_state, _status_chip(f"Erro ao indexar: {exc}", "error")
 
     if current_state is None:
         state = {"id": session_id, "graph": graph, "queries": 0, "uploads": 1}
@@ -112,20 +175,19 @@ def index_files(files, current_state):
         len(documents),
         next_upload,
     )
-    status = (
-        f"Indexados {len(documents)} documento(s). "
-        f"Pronto pra perguntas ({state['queries']}/{MAX_QUERIES_PER_SESSION} já usadas, "
-        f"upload {next_upload}/{MAX_INDEX_OPERATIONS_PER_SESSION})."
-    )
-    return state, status
+    return state, _status_chip("Indexado", "ready")
 
 
 def _render_sources(sources_struct: list[dict]) -> str:
     if not sources_struct:
         return "_Faça uma pergunta para ver as fontes citadas._"
-    lines = ["**Fontes recuperadas:**", ""]
+    lines: list[str] = []
     for s in sources_struct:
-        lines.append(f"**[{s['id']}]** (score {s['score']:.3f})")
+        meta_bits = [f"`{s.get('source', 'unknown')}`"]
+        if s.get("page") is not None:
+            meta_bits.append(f"página {s['page']}")
+        meta_bits.append(f"score {s['score']:.3f}")
+        lines.append(f"**[{s['id']}]** · {' · '.join(meta_bits)}")
         lines.append(f"> {s['snippet']}")
         lines.append("")
     return "\n".join(lines)
@@ -192,19 +254,8 @@ async def respond(message: str, history: list[dict], state):
     yield history, "", _render_sources(sources_struct)
 
 
-with gr.Blocks(title="rag-chatbot — demo") as demo:
-    gr.Markdown(
-        f"""
-        # rag-chatbot — demo
-
-        Pipeline RAG com **LangGraph + Qdrant + BM25 + RRF + cross-encoder rerank**.
-        Suba `.txt`, `.md` ou `.pdf` e pergunte sobre o conteúdo.
-
-        > Demo efêmera: documentos vivem só na sessão e somem em qualquer restart.
-        > Limites: {MAX_FILES_PER_SESSION} arquivos (≤ {MAX_FILE_SIZE_MB} MB cada),
-        > {MAX_QUERIES_PER_SESSION} perguntas por sessão.
-        """
-    )
+with gr.Blocks(title="rag-chatbot — demo", analytics_enabled=False) as demo:
+    gr.HTML(HERO_HTML)
 
     state = gr.State(value=None)
 
@@ -215,14 +266,14 @@ with gr.Blocks(title="rag-chatbot — demo") as demo:
                 file_types=[".txt", ".md", ".pdf"],
                 label="Documentos",
             )
-            status = gr.Textbox(
-                label="Status",
-                interactive=False,
-                value="Envie documentos para começar.",
-            )
+            status = gr.HTML(value=INITIAL_STATUS)
 
         with gr.Column(scale=2):
-            chatbot = gr.Chatbot(height=420, label="Conversa")
+            chatbot = gr.Chatbot(
+                height=460,
+                label="Conversa",
+                placeholder=CHAT_PLACEHOLDER,
+            )
             msg = gr.Textbox(label="Pergunta", placeholder="O que você quer saber?")
             send = gr.Button("Enviar", variant="primary")
 
@@ -233,16 +284,27 @@ with gr.Blocks(title="rag-chatbot — demo") as demo:
                     "Liste os tópicos cobertos.",
                 ],
                 inputs=[msg],
-                label="Exemplos de perguntas",
+                label="Exemplos",
             )
 
-    with gr.Accordion("Fontes", open=False):
-        sources_md = gr.Markdown("_Faça uma pergunta para ver as fontes citadas._")
+            with gr.Accordion("Fontes recuperadas", open=True):
+                sources_md = gr.Markdown("_Faça uma pergunta para ver as fontes citadas._")
 
-    files.change(index_files, inputs=[files, state], outputs=[state, status])
-    send.click(respond, inputs=[msg, chatbot, state], outputs=[chatbot, msg, sources_md])
-    msg.submit(respond, inputs=[msg, chatbot, state], outputs=[chatbot, msg, sources_md])
+    files.change(index_files, inputs=[files, state], outputs=[state, status], api_name=False)
+    send.click(
+        respond, inputs=[msg, chatbot, state], outputs=[chatbot, msg, sources_md], api_name=False
+    )
+    msg.submit(
+        respond, inputs=[msg, chatbot, state], outputs=[chatbot, msg, sources_md], api_name=False
+    )
 
 
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    port = int(os.getenv("GRADIO_SERVER_PORT", "7860"))
+    demo.launch(
+        server_name="0.0.0.0",
+        server_port=port,
+        theme=THEME,
+        css=CSS,
+        footer_links=["gradio"],
+    )

@@ -31,6 +31,7 @@ flashrank>=0.2.9
 # API REST com streaming
 fastapi>=0.115.0
 uvicorn>=0.30.0
+slowapi>=0.1.9
 
 # Demo Gradio (Hugging Face Spaces) — gradio 6+ usa messages-format por padrão
 gradio>=6.0,<7.0

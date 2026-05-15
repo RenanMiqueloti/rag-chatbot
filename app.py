@@ -31,7 +31,7 @@ from langchain_core.documents import Document
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 from langchain_qdrant import QdrantVectorStore
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 from langgraph.graph import END, START, StateGraph
 
 load_dotenv()
@@ -97,6 +97,10 @@ def extract_citation_ids(text: str) -> list[int]:
 # ── Document loading ──────────────────────────────────────────────────────
 
 
+class EmptyDocumentError(ValueError):
+    """Documento sem texto extraível — comum em PDFs escaneados (só imagens)."""
+
+
 def load_documents_from_files(paths: list[str | Path]) -> list[Document]:
     """Lê .txt, .md e .pdf, retorna Documents prontos pra split.
 
@@ -105,6 +109,9 @@ def load_documents_from_files(paths: list[str | Path]) -> list[Document]:
 
     Returns:
         Lista de Documents prontos pra ``build_retrievers``.
+
+    Raises:
+        EmptyDocumentError: nenhum texto pôde ser extraído (PDF escaneado, doc vazio).
     """
     from langchain_community.document_loaders import PyPDFLoader, TextLoader
 
@@ -118,10 +125,76 @@ def load_documents_from_files(paths: list[str | Path]) -> list[Document]:
             documents.extend(TextLoader(str(path), encoding="utf-8").load())
         else:
             raise ValueError(f"Tipo de arquivo não suportado: {suffix} ({path})")
-    return documents
+
+    # Filtra docs sem texto (páginas em branco, PDFs com só imagem).
+    non_empty = [d for d in documents if d.page_content and d.page_content.strip()]
+    if not non_empty:
+        names = ", ".join(Path(p).name for p in paths)
+        raise EmptyDocumentError(
+            f"Nenhum texto pôde ser extraído de: {names}. "
+            "PDFs escaneados (só imagens) precisam de OCR antes do upload."
+        )
+    return non_empty
 
 
 # ── Indexing ──────────────────────────────────────────────────────────────
+
+
+DEFAULT_EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+
+
+def _header_prefix(meta: dict) -> str:
+    """Reconstrói '# H1\\n## H2\\n### H3' a partir dos headers no metadata."""
+    parts: list[str] = []
+    for level_str in ("h1", "h2", "h3"):
+        title = meta.get(level_str)
+        if title:
+            level = int(level_str[1])
+            parts.append(f"{'#' * level} {title}")
+    return "\n".join(parts)
+
+
+def _split_documents(
+    documents: list[Document],
+    chunk_size: int = 600,
+    chunk_overlap: int = 100,
+) -> list[Document]:
+    """Quebra docs em chunks preservando seções de markdown + header parent.
+
+    Docs .md passam por MarkdownHeaderTextSplitter (mantém H1/H2/H3 + bullets
+    juntos como unidade semântica). Se uma seção excede chunk_size, é dividida
+    pelo RecursiveCharacterTextSplitter — e o **header parent é propagado como
+    prefixo** nos sub-chunks que não começam com header, pra preservar o contexto
+    semântico do qual o chunk órfão herda.
+    """
+    md_splitter = MarkdownHeaderTextSplitter(
+        headers_to_split_on=[("#", "h1"), ("##", "h2"), ("###", "h3")],
+        strip_headers=False,
+    )
+    char_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size, chunk_overlap=chunk_overlap
+    )
+
+    final: list[Document] = []
+    for doc in documents:
+        source = str(doc.metadata.get("source", ""))
+        if not source.endswith(".md"):
+            final.extend(char_splitter.split_documents([doc]))
+            continue
+
+        for sub in md_splitter.split_text(doc.page_content):
+            meta = {**doc.metadata, **sub.metadata}
+            if len(sub.page_content) <= chunk_size:
+                final.append(Document(page_content=sub.page_content, metadata=meta))
+                continue
+
+            header_prefix = _header_prefix(sub.metadata)
+            for piece in char_splitter.split_text(sub.page_content):
+                if header_prefix and not piece.lstrip().startswith("#"):
+                    piece = f"{header_prefix}\n\n{piece}"
+                final.append(Document(page_content=piece, metadata=meta))
+
+    return final
 
 
 def build_retrievers(
@@ -142,11 +215,10 @@ def build_retrievers(
     """
     from langchain_huggingface import HuggingFaceEmbeddings
 
-    splitter = RecursiveCharacterTextSplitter(chunk_size=600, chunk_overlap=100)
-    chunks = splitter.split_documents(documents)
+    chunks = _split_documents(documents)
 
-    # Local embeddings keep the demo free of per-query API cost.
-    embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    embedding_model = os.getenv("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
+    embeddings = HuggingFaceEmbeddings(model_name=embedding_model)
 
     effective_url = qdrant_url
     if effective_url is None:
@@ -167,10 +239,10 @@ def build_retrievers(
             location=":memory:",
             collection_name=collection_name,
         )
-    semantic_retriever = vectorstore.as_retriever(search_kwargs={"k": 6})
+    semantic_retriever = vectorstore.as_retriever(search_kwargs={"k": 10})
 
     bm25 = BM25Retriever.from_documents(chunks)
-    bm25.k = 6
+    bm25.k = 10
 
     return semantic_retriever, bm25
 
@@ -207,20 +279,40 @@ def reciprocal_rank_fusion(
 # ── Re-ranking ────────────────────────────────────────────────────────────
 
 
+DEFAULT_RERANKER_MODEL = "ms-marco-MiniLM-L-12-v2"
+
+
+RERANK_CONFIDENCE_THRESHOLD = 0.5
+
+
 def rerank(query: str, docs: list[Document], top_n: int = 3) -> list[tuple[Document, float]]:
     """Re-rank documentos com cross-encoder (FlashRank), com fallback gracioso.
 
     Retorna pares ``(Document, score)``. Quando FlashRank não está disponível
     cai num fallback que passa os top_n por score de fusão com score 0.0.
+
+    Threshold de confiança: se o top score for menor que ``RERANK_CONFIDENCE_THRESHOLD``,
+    o reranker provavelmente não entendeu a query (caso típico: cross-encoder
+    mono-EN diante de vocab PT puro) — nesse caso devolve a ordem original (RRF
+    fusion) com scores 0.0, evitando que o rerank degradado tire chunks bons do topo.
     """
     try:
         from flashrank import Ranker, RerankRequest  # type: ignore[import]
 
         cache_dir = os.getenv("FLASHRANK_CACHE_DIR", "/tmp")
-        ranker = Ranker(model_name="ms-marco-MiniLM-L-12-v2", cache_dir=cache_dir)
+        reranker_model = os.getenv("RERANKER_MODEL", DEFAULT_RERANKER_MODEL)
+        ranker = Ranker(model_name=reranker_model, cache_dir=cache_dir)
         passages = [{"id": i, "text": d.page_content} for i, d in enumerate(docs)]
         request = RerankRequest(query=query, passages=passages)
         results = ranker.rerank(request)
+
+        if results and float(results[0].get("score", 0.0)) < RERANK_CONFIDENCE_THRESHOLD:
+            # Rerank desistiu — devolve a fusão completa em vez de cortar no top_n.
+            # Quando o cross-encoder não entende a query (vocab PT puro, EN x PT,
+            # termos com baixo sinal lexical), cortar no top_n da fusão pode
+            # descartar o chunk que tem a resposta — melhor entregar tudo ao LLM.
+            return [(d, 0.0) for d in docs]
+
         out: list[tuple[Document, float]] = []
         for r in results[:top_n]:
             idx = r["id"]
@@ -262,10 +354,17 @@ def rerank_node(state: RAGState) -> RAGState:
     t0 = time.perf_counter()
     query = state["query"]
     in_docs = state["retrieved_docs"]
-    pairs = rerank(query, in_docs)
+    pairs = rerank(query, in_docs, top_n=5)
     reranked = [d for d, _ in pairs]
     sources_struct = [
-        {"id": i + 1, "snippet": d.page_content[:180], "score": s} for i, (d, s) in enumerate(pairs)
+        {
+            "id": i + 1,
+            "snippet": d.page_content[:180],
+            "score": s,
+            "source": Path(d.metadata.get("source", "")).name or "unknown",
+            "page": d.metadata.get("page"),
+        }
+        for i, (d, s) in enumerate(pairs)
     ]
     dt_ms = (time.perf_counter() - t0) * 1000
     logger.info(
@@ -289,9 +388,12 @@ def make_generate_node(llm: BaseChatModel):
         )
         prompt = (
             "Use ONLY the context below to answer the question.\n"
-            "Cite each claim with [N] referencing the source document.\n"
-            "If the answer is not in the context, say you don't know — "
-            "without inventing citations.\n\n"
+            "Answer in the same language as the question.\n"
+            "Cite each claim with bracketed source numbers like [1], [2], [3] "
+            "referencing the items in the context.\n"
+            'If the answer is not in the context, reply only with "Não sei." '
+            '(or "I don\'t know." if the question is in English) — '
+            "do not include any citation, do not write [N] or any bracket token.\n\n"
             f"Context:\n{numbered}\n\n"
             f"Question: {query}"
         )

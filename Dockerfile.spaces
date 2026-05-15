@@ -17,8 +17,10 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 # Pre-cache embedding + rerank models so first request doesn't pay the download.
+# Embedding multilingual (corpus PT-BR) + reranker MiniLM (discrimina bem em PT,
+# MultiBERT satura todos os scores em ~1.0 → mata o ranking).
 RUN python -c "from sentence_transformers import SentenceTransformer; \
-    SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')" \
+    SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')" \
  && python -c "from flashrank import Ranker; \
     Ranker(model_name='ms-marco-MiniLM-L-12-v2', cache_dir='/app/flashrank-cache')"
 
