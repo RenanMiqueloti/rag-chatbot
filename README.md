@@ -107,8 +107,18 @@ Construída com `Dockerfile.spaces` (SDK Docker, porta 7860). Sessão isolada po
 **Limites por sessão:**
 
 - 3 arquivos, até 5 MB cada (`.txt`, `.md`, `.pdf`)
-- 30 perguntas (acumulado — não reseta ao re-upload)
+- 15 perguntas (acumulado — não reseta ao re-upload)
 - 3 indexações
+- Cooldown de 3s entre perguntas
+- Sessão expira após 30 min de inatividade (perde uploads, exige reindexar)
+
+**Defesas de IP** (`gradio_app.py`):
+
+- Rate limit por IP em `/gradio_api/*` (default `30/min`, `300/hora`, in-memory).
+- Bloqueio de IPs em [Tor exit list](https://check.torproject.org/torbulkexitlist) — fetch na startup com fallback pra snapshot local (`tor_exit_nodes.txt`).
+- `MAX_QUERY_CHARS`, cooldown e limites de sessão acima.
+
+Não defende contra atacante motivado (proxies residenciais, IPv6, restart reseta contadores). Cobre abuso casual: scripts rasteiros, abas anônimas em rajada, Tor exits comuns.
 
 **API bloqueada:** todos os event handlers usam `api_name=False` e o launch passa `footer_links=["gradio"]`. Sem link "Use via API", sem modal de Configurações. A demo só responde via UI.
 
@@ -170,7 +180,7 @@ Env vars suportadas (defaults entre parênteses):
 | `EMBEDDING_MODEL` | `intfloat/multilingual-e5-small` | Encoder semântico |
 | `RERANKER_MODEL` | `ms-marco-MiniLM-L-12-v2` | Cross-encoder do FlashRank |
 | `FLASHRANK_CACHE_DIR` | `/tmp` | Cache dos pesos do reranker |
-| `BROAD_QUERY_MAX_CHUNKS` | `80` | Teto de chunks devolvidos no bypass de queries amplas. Limita prompt em docs muito longos. |
+| `BROAD_QUERY_MAX_CHUNKS` | `40` | Teto de chunks devolvidos no bypass de queries amplas. Limita prompt em docs muito longos e preserva quota Groq na demo pública. |
 
 ### Infra
 | Variável | Default | Descrição |
@@ -197,6 +207,12 @@ Env vars suportadas (defaults entre parênteses):
 | Variável | Default | Descrição |
 |---|---|---|
 | `GRADIO_SERVER_PORT` | `7860` | Porta do servidor da demo |
+| `MAX_QUERIES_PER_SESSION` | `15` | Perguntas máximas por sessão |
+| `QUERY_COOLDOWN_SECONDS` | `3` | Cooldown entre perguntas |
+| `SESSION_IDLE_TIMEOUT_SECONDS` | `1800` | Expira sessão após inatividade (segundos) |
+| `GRADIO_RATE_LIMIT_PER_MINUTE` | `30` | Rate limit por IP em `/gradio_api/*` |
+| `GRADIO_RATE_LIMIT_PER_HOUR` | `300` | Rate limit por IP em `/gradio_api/*` |
+| `TOR_EXIT_LIST_URL` | `check.torproject.org/torbulkexitlist` | Fonte da lista de Tor exit nodes |
 
 ---
 
@@ -289,8 +305,9 @@ Output: scores por pergunta + média agregada. Útil pra regressão quando você
 rag-chatbot/
 ├── app.py              # Pipeline LangGraph: retrieve → rerank → generate
 ├── api.py              # FastAPI: /query, /stream, /health + rate limiting
-├── gradio_app.py       # Demo Gradio (HF Spaces)
+├── gradio_app.py       # Demo Gradio (HF Spaces) + defesas (rate limit, Tor block)
 ├── rate_limits.py      # is_rate_limit helper + DailyRequestBudget
+├── tor_exit_nodes.txt  # Snapshot da lista pública de Tor exits (fallback)
 ├── evals/
 │   ├── evaluate.py     # Harness LLM-as-judge
 │   └── dataset.json    # Dataset de regressão

@@ -14,6 +14,7 @@ from __future__ import annotations
 import gc
 import logging
 import os
+import time
 from pathlib import Path
 from uuid import uuid4
 
@@ -39,13 +40,21 @@ logger = logging.getLogger(__name__)
 MAX_FILE_SIZE_MB = 5
 MAX_TOTAL_SIZE_MB = 15  # soma máxima cumulativa por batch (3 arquivos × 5 MB)
 MAX_FILES_PER_SESSION = 3
-MAX_QUERIES_PER_SESSION = 30
+MAX_QUERIES_PER_SESSION = int(os.getenv("MAX_QUERIES_PER_SESSION", "15"))
 MAX_INDEX_OPERATIONS_PER_SESSION = 3
+QUERY_COOLDOWN_SECONDS = float(os.getenv("QUERY_COOLDOWN_SECONDS", "3"))
+SESSION_IDLE_TIMEOUT_SECONDS = int(os.getenv("SESSION_IDLE_TIMEOUT_SECONDS", "1800"))
 
 QUOTA_QUERIES_MSG = "Limite da demo atingido para esta sessão. Recarregue a página pra recomeçar."
 QUOTA_INDEX_MSG = (
     f"Limite de {MAX_INDEX_OPERATIONS_PER_SESSION} indexações por sessão atingido. "
     "Recarregue a página pra recomeçar."
+)
+COOLDOWN_MSG = (
+    f"Aguarde {QUERY_COOLDOWN_SECONDS:.0f} segundos entre perguntas. Tenta de novo daqui a pouco."
+)
+SESSION_EXPIRED_MSG = (
+    "Sessão expirou por inatividade. Recarregue a página e suba os documentos de novo."
 )
 RATE_LIMIT_MSG = _SHARED_RATE_LIMIT_MSG
 NO_STATE_MSG = "Envie documentos primeiro."
@@ -72,6 +81,7 @@ CSS = """
 #hero { padding: 4px 0 16px; }
 #hero h1 { margin: 0 0 4px; font-weight: 600; letter-spacing: -0.01em; font-size: 1.5rem; }
 #hero p { margin: 0; color: var(--body-text-color-subdued); }
+#hero p.disclaimer { margin-top: 6px; font-size: 0.85em; opacity: 0.8; }
 .message { padding: 14px 16px !important; line-height: 1.6 !important; }
 """
 
@@ -79,6 +89,7 @@ HERO_HTML = """
 <div id="hero">
   <h1>rag-chatbot · demo</h1>
   <p>Pipeline RAG com LangGraph + Qdrant + BM25 + RRF + cross-encoder rerank.</p>
+  <p class="disclaimer">Demo efêmera · sessões não persistem entre restarts · limites por sessão pra controle de custo.</p>
 </div>
 """
 
@@ -201,12 +212,21 @@ def index_files(files, current_state):
         yield current_state, _status_chip(f"Erro ao indexar: {exc}", "error")
         return
 
+    now = time.monotonic()
     if current_state is None:
-        state = {"id": session_id, "graph": graph, "queries": 0, "uploads": 1}
+        state = {
+            "id": session_id,
+            "graph": graph,
+            "queries": 0,
+            "uploads": 1,
+            "last_activity_at": now,
+            "last_query_at": None,
+        }
     else:
         # Drop the previous graph eagerly so its Qdrant in-memory data can be freed.
         current_state["graph"] = graph
         current_state["uploads"] = next_upload
+        current_state["last_activity_at"] = now
         state = current_state
         gc.collect()
 
@@ -257,6 +277,22 @@ async def respond(message: str, history: list[dict], state):
         yield history, "", gr.update()
         return
 
+    now = time.monotonic()
+    last_activity = state.get("last_activity_at")
+    if last_activity is not None and now - last_activity > SESSION_IDLE_TIMEOUT_SECONDS:
+        state["graph"] = None
+        history.append(user_turn)
+        history.append({"role": "assistant", "content": SESSION_EXPIRED_MSG})
+        yield history, "", gr.update()
+        return
+
+    last_query = state.get("last_query_at")
+    if last_query is not None and now - last_query < QUERY_COOLDOWN_SECONDS:
+        history.append(user_turn)
+        history.append({"role": "assistant", "content": COOLDOWN_MSG})
+        yield history, "", gr.update()
+        return
+
     if state.get("queries", 0) >= MAX_QUERIES_PER_SESSION:
         history.append(user_turn)
         history.append({"role": "assistant", "content": QUOTA_QUERIES_MSG})
@@ -264,6 +300,8 @@ async def respond(message: str, history: list[dict], state):
         return
 
     state["queries"] = state.get("queries", 0) + 1
+    state["last_query_at"] = now
+    state["last_activity_at"] = now
     history.append(user_turn)
     history.append({"role": "assistant", "content": ""})
     yield history, "", gr.update()
@@ -330,9 +368,11 @@ with gr.Blocks(title="rag-chatbot — demo", analytics_enabled=False) as demo:
                     "Faça um resumo dos documentos.",
                     "Quais são os principais conceitos abordados?",
                     "Liste os tópicos cobertos.",
+                    "Liste as principais conclusões.",
                 ],
                 inputs=[msg],
                 label="Exemplos",
+                api_name=False,
             )
 
             with gr.Accordion("Fontes recuperadas", open=True):
@@ -347,12 +387,118 @@ with gr.Blocks(title="rag-chatbot — demo", analytics_enabled=False) as demo:
     )
 
 
-if __name__ == "__main__":
-    port = int(os.getenv("GRADIO_SERVER_PORT", "7860"))
-    demo.launch(
-        server_name="0.0.0.0",
-        server_port=port,
+# ── Casual abuse defenses ────────────────────────────────────────────────
+#
+# Camadas:
+#   1. Bloqueio de IPs em Tor exit list pública (snapshot na startup).
+#   2. Rate limit por IP nos endpoints reais do Gradio (/gradio_api/*).
+# Não defende contra atacante motivado (proxies residenciais, IPv6, restart
+# do container reseta contador). Defende contra abuso casual de scripts
+# rasteiros e tabs anônimas em rajada.
+
+TOR_EXIT_LIST_URL = os.getenv("TOR_EXIT_LIST_URL", "https://check.torproject.org/torbulkexitlist")
+TOR_EXIT_LIST_FALLBACK = Path(__file__).resolve().parent / "tor_exit_nodes.txt"
+GRADIO_RATE_LIMIT_PER_MINUTE = int(os.getenv("GRADIO_RATE_LIMIT_PER_MINUTE", "30"))
+GRADIO_RATE_LIMIT_PER_HOUR = int(os.getenv("GRADIO_RATE_LIMIT_PER_HOUR", "300"))
+
+
+def _parse_tor_list(text: str) -> set[str]:
+    return {line.strip() for line in text.splitlines() if line.strip() and not line.startswith("#")}
+
+
+def _fetch_tor_exit_nodes(url: str = TOR_EXIT_LIST_URL, timeout: float = 5.0) -> set[str]:
+    """Baixa a lista pública de Tor exit nodes. Se a rede falhar, cai pra
+    snapshot local (``tor_exit_nodes.txt``). Se nem snapshot existir, devolve
+    set vazio e segue sem bloqueio Tor.
+    """
+    try:
+        import urllib.request
+
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            text = resp.read().decode("utf-8", errors="ignore")
+        nodes = _parse_tor_list(text)
+        logger.info("tor exit list carregada via rede: %d IPs", len(nodes))
+        return nodes
+    except Exception as exc:
+        logger.warning("tor exit list fetch falhou: %s — tentando snapshot local", exc)
+    try:
+        nodes = _parse_tor_list(TOR_EXIT_LIST_FALLBACK.read_text(encoding="utf-8"))
+        logger.info("tor exit list carregada via snapshot: %d IPs", len(nodes))
+        return nodes
+    except FileNotFoundError:
+        logger.warning("snapshot %s ausente — bloqueio Tor desativado", TOR_EXIT_LIST_FALLBACK.name)
+        return set()
+
+
+class _IPRateLimiter:
+    """Rate limiter in-memory por IP, janela deslizante. Stdlib only."""
+
+    def __init__(self, per_minute: int, per_hour: int):
+        from collections import defaultdict, deque
+        from threading import Lock
+
+        self.per_minute = per_minute
+        self.per_hour = per_hour
+        self._hits: dict[str, deque] = defaultdict(deque)
+        self._lock = Lock()
+
+    def try_consume(self, ip: str) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            hist = self._hits[ip]
+            cutoff_hour = now - 3600
+            while hist and hist[0] < cutoff_hour:
+                hist.popleft()
+            recent_minute = sum(1 for t in hist if t > now - 60)
+            if recent_minute >= self.per_minute or len(hist) >= self.per_hour:
+                return False
+            hist.append(now)
+            return True
+
+
+def _client_ip(request) -> str:
+    """IP do cliente. Prioriza X-Forwarded-For (HF Spaces, proxy reverso)."""
+    fwd = request.headers.get("x-forwarded-for") or request.headers.get("x-real-ip")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _build_app():
+    """Monta o FastAPI com defesas + Gradio."""
+    from fastapi import FastAPI, Request
+    from fastapi.responses import JSONResponse
+
+    tor_nodes = _fetch_tor_exit_nodes()
+    limiter = _IPRateLimiter(GRADIO_RATE_LIMIT_PER_MINUTE, GRADIO_RATE_LIMIT_PER_HOUR)
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def _defenses(request: Request, call_next):
+        ip = _client_ip(request)
+        if ip in tor_nodes:
+            logger.info("blocked tor exit ip=%s path=%s", ip, request.url.path)
+            return JSONResponse({"detail": "Acesso indisponível neste IP."}, status_code=403)
+        if request.url.path.startswith("/gradio_api") and not limiter.try_consume(ip):
+            logger.info("rate limited ip=%s path=%s", ip, request.url.path)
+            return JSONResponse(
+                {"detail": "Muitas requisições. Aguarde alguns minutos."},
+                status_code=429,
+            )
+        return await call_next(request)
+
+    return gr.mount_gradio_app(
+        app,
+        demo,
+        path="/",
         theme=THEME,
         css=CSS,
         footer_links=["gradio"],
     )
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    port = int(os.getenv("GRADIO_SERVER_PORT", "7860"))
+    uvicorn.run(_build_app(), host="0.0.0.0", port=port, log_level="info")

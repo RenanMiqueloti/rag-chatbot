@@ -369,7 +369,7 @@ def is_broad_query(query: str) -> bool:
     return bool(BROAD_QUERY_RE.search(query))
 
 
-BROAD_QUERY_MAX_CHUNKS = int(os.getenv("BROAD_QUERY_MAX_CHUNKS", "80"))
+BROAD_QUERY_MAX_CHUNKS = int(os.getenv("BROAD_QUERY_MAX_CHUNKS", "40"))
 
 
 def rerank(query: str, docs: list[Document], top_n: int = 3) -> list[tuple[Document, float]]:
