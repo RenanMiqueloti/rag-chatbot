@@ -11,3 +11,7 @@ venv/
 .ruff_cache/
 *.log
 .DS_Store
+
+# Test docs (local-only)
+teste_rag_*.txt
+*.pdf

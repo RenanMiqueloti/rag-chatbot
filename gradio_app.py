@@ -254,7 +254,7 @@ def _render_sources(sources_struct: list[dict]) -> str:
         meta_bits = [f"`{s.get('source', 'unknown')}`"]
         if s.get("page") is not None:
             meta_bits.append(f"página {s['page']}")
-        meta_bits.append(f"score {s['score']:.3f}")
+        meta_bits.append(f"score {s['score']:.3f}" if s["score"] > 0 else "sem rerank")
         lines.append(f"**[{s['id']}]** · {' · '.join(meta_bits)}")
         lines.append(f"> {s['snippet']}")
         lines.append("")
