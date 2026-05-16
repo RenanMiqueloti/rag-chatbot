@@ -37,6 +37,23 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# Alerta se um Space público ficou com LangSmith ligado. Não bloqueia —
+# pode haver razão legítima — mas força visibilidade no log porque cada
+# trace persiste indefinidamente em smith.langchain.com com query +
+# chunks + resposta de todos os visitantes.
+if os.getenv("SPACE_ID") and os.getenv("LANGCHAIN_TRACING_V2", "").lower() in {
+    "1",
+    "true",
+    "yes",
+}:
+    logger.warning(
+        "LangSmith tracing ATIVO em Space público — conteúdo de queries, "
+        "chunks e respostas vai persistir externamente em smith.langchain.com. "
+        "Confirme se isso é desejado; pra desativar, remova LANGCHAIN_TRACING_V2 "
+        "das Variables do Space."
+    )
+
+
 MAX_FILE_SIZE_MB = 5
 MAX_TOTAL_SIZE_MB = 15  # soma máxima cumulativa por batch (3 arquivos × 5 MB)
 MAX_FILES_PER_SESSION = 3
@@ -122,6 +139,24 @@ def _is_rate_limit(exc: BaseException) -> bool:
     return _shared_is_rate_limit(exc)
 
 
+def _cleanup_upload_files(paths: list[str]) -> None:
+    """Apaga arquivos temporários do Gradio após indexação (best-effort).
+
+    Gradio salva uploads em ``/tmp/gradio/<uuid>/<filename>`` e só limpa
+    no próximo restart do container. Como o conteúdo já vive em RAM
+    após ``load_documents_from_files``, a cópia em disco é redundante e
+    aumenta a superfície de leak (file-serving do Gradio, dump de /tmp,
+    visitante adivinhando o uuid). Apagar imediatamente fecha essa
+    janela. Falhas são silenciosas — não queremos que erro de cleanup
+    apareça pro usuário.
+    """
+    import contextlib
+
+    for p in paths:
+        with contextlib.suppress(OSError):
+            Path(p).unlink(missing_ok=True)
+
+
 def index_files(files, current_state):
     """Valida limites, carrega documentos e compila o grafo RAG da sessão.
 
@@ -182,15 +217,22 @@ def index_files(files, current_state):
 
     yield current_state, _status_chip(f"Lendo {len(files)} arquivo(s)…", "active")
 
+    paths = [f.name for f in files]
     try:
-        paths = [f.name for f in files]
         documents = load_documents_from_files(paths)
     except (EmptyDocumentError, ProtectedDocumentError, EncodingError) as exc:
+        _cleanup_upload_files(paths)
         yield current_state, _status_chip(str(exc), "error")
         return
     except Exception as exc:
+        _cleanup_upload_files(paths)
         yield current_state, _status_chip(f"Erro ao ler arquivos: {exc}", "error")
         return
+    # Conteúdo já está em RAM como Documents. Apaga os arquivos temporários
+    # do Gradio (/tmp/gradio/<uuid>/<filename>) imediatamente — fecha a
+    # janela em que file-serving do Gradio ou dump de /tmp poderia ler
+    # docs brutos de outros visitantes.
+    _cleanup_upload_files(paths)
 
     yield (
         current_state,
@@ -494,6 +536,10 @@ def _build_app():
         theme=THEME,
         css=CSS,
         footer_links=["gradio"],
+        # Gradio por default whitelista /tmp/gradio no file-serving — é
+        # onde os uploads de visitantes acabam. Bloqueia explicitamente
+        # pra ninguém ler doc bruto de outra sessão via /file=<path>.
+        blocked_paths=["/tmp/gradio"],
     )
 
 
