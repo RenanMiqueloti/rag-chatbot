@@ -79,60 +79,57 @@ NO_STATE_MSG = "Envie documentos primeiro."
 
 THEME = gr.themes.Soft(
     primary_hue=gr.themes.colors.indigo,
-    secondary_hue=gr.themes.colors.purple,
     neutral_hue=gr.themes.colors.slate,
     font=[gr.themes.GoogleFont("Inter"), "system-ui", "sans-serif"],
     font_mono=[gr.themes.GoogleFont("JetBrains Mono"), "Menlo", "monospace"],
 ).set(
-    body_background_fill="*neutral_50",
-    block_background_fill="white",
     block_border_width="1px",
-    block_radius="14px",
+    block_radius="12px",
     button_primary_background_fill="*primary_600",
     button_primary_background_fill_hover="*primary_700",
     button_primary_text_color="white",
 )
 
 CSS = """
-.gradio-container { max-width: 1200px !important; margin: 0 auto !important; }
-#hero { padding: 4px 0 16px; }
-#hero h1 { margin: 0 0 4px; font-weight: 600; letter-spacing: -0.01em; font-size: 1.5rem; }
-#hero p { margin: 0; color: var(--body-text-color-subdued); }
-#hero p.disclaimer { margin-top: 6px; font-size: 0.85em; opacity: 0.8; }
-.message { padding: 14px 16px !important; line-height: 1.6 !important; }
+.gradio-container { max-width: 1080px !important; margin: 0 auto !important; padding-top: 28px !important; }
+#hero { display:flex; align-items:flex-start; gap:14px; padding: 0 0 22px; }
+#hero .mark { font-family: var(--font-mono); font-weight:700; color: var(--primary-600); font-size: 1.5rem; line-height: 1.2; letter-spacing: -0.02em; }
+#hero .copy h1 { margin:0; font-weight:600; letter-spacing:-0.018em; font-size:1.55rem; line-height:1.2; }
+#hero .copy p { margin:6px 0 0; color: var(--body-text-color-subdued); font-size: 0.95rem; line-height:1.45; }
+.status-chip { display:inline-flex; align-items:center; gap:8px; padding:6px 12px; border-radius:999px; font-weight:500; font-size:13px; }
+.status-chip.active::before { content:""; width:6px; height:6px; border-radius:50%; background:currentColor; animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.35 } }
+.message { padding: 12px 16px !important; line-height: 1.6 !important; }
+footer { display: none !important; }
 """
 
 HERO_HTML = """
 <div id="hero">
-  <h1>rag-chatbot · demo</h1>
-  <p>Pipeline RAG com LangGraph + Qdrant + BM25 + RRF + cross-encoder rerank.</p>
-  <p class="disclaimer">Demo efêmera · sessões não persistem entre restarts · limites por sessão pra controle de custo.</p>
+  <div class="mark">[1]</div>
+  <div class="copy">
+    <h1>rag-chatbot</h1>
+    <p>Pergunte sobre seu documento — cada resposta cita as fontes.</p>
+  </div>
 </div>
 """
 
-CHAT_PLACEHOLDER = (
-    "Suba documentos no painel ao lado e pergunte sobre o conteúdo.\n\n"
-    "Sem corpus próprio? `data/example.md` no repo é um primer curto sobre RAG."
-)
+CHAT_PLACEHOLDER = "Sem conversa ainda. Suba um arquivo e pergunte."
 
 _CHIP_PALETTE = {
-    "neutral": ("#e0e7ff", "#3730a3"),
-    "ready": ("#dcfce7", "#15803d"),
-    "active": ("#fef3c7", "#a16207"),
-    "error": ("#fee2e2", "#b91c1c"),
+    "neutral": ("rgba(99,102,241,.10)", "var(--primary-600)"),
+    "ready": ("rgba(34,197,94,.12)", "#15803d"),
+    "active": ("rgba(234,179,8,.14)", "#a16207"),
+    "error": ("rgba(239,68,68,.12)", "#b91c1c"),
 }
 
 
 def _status_chip(text: str, kind: str = "neutral") -> str:
     bg, fg = _CHIP_PALETTE.get(kind, _CHIP_PALETTE["neutral"])
-    return (
-        f'<div style="display:inline-flex;align-items:center;gap:8px;'
-        f"padding:8px 14px;border-radius:999px;background:{bg};color:{fg};"
-        f'font-weight:500;font-size:14px;">{text}</div>'
-    )
+    cls = f"status-chip {kind}"
+    return f'<div class="{cls}" style="background:{bg};color:{fg};">{text}</div>'
 
 
-INITIAL_STATUS = _status_chip("Envie documentos para começar.", "neutral")
+INITIAL_STATUS = _status_chip("Envie um documento.", "neutral")
 
 
 def _is_rate_limit(exc: BaseException) -> bool:
@@ -382,42 +379,48 @@ async def respond(message: str, history: list[dict], state):
     yield history, "", _render_sources(sources_struct)
 
 
-with gr.Blocks(title="rag-chatbot — demo", analytics_enabled=False) as demo:
+with gr.Blocks(title="rag-chatbot", analytics_enabled=False, fill_width=False) as demo:
     gr.HTML(HERO_HTML)
 
     state = gr.State(value=None)
 
-    with gr.Row():
-        with gr.Column(scale=1):
+    with gr.Row(equal_height=False):
+        with gr.Column(scale=2, min_width=240):
             files = gr.File(
                 file_count="multiple",
                 file_types=[".txt", ".md", ".pdf"],
                 label="Documentos",
+                show_label=False,
             )
             status = gr.HTML(value=INITIAL_STATUS)
 
-        with gr.Column(scale=2):
+        with gr.Column(scale=5, min_width=420):
             chatbot = gr.Chatbot(
                 height=460,
-                label="Conversa",
+                show_label=False,
                 placeholder=CHAT_PLACEHOLDER,
             )
-            msg = gr.Textbox(label="Pergunta", placeholder="O que você quer saber?")
-            send = gr.Button("Enviar", variant="primary")
+            with gr.Row():
+                msg = gr.Textbox(
+                    show_label=False,
+                    placeholder="Pergunte algo sobre o documento…",
+                    container=False,
+                    scale=8,
+                )
+                send = gr.Button("Enviar", variant="primary", scale=1, min_width=100)
 
             gr.Examples(
                 examples=[
-                    "Faça um resumo dos documentos.",
-                    "Quais são os principais conceitos abordados?",
-                    "Liste os tópicos cobertos.",
+                    "Faça um resumo do documento.",
+                    "Quais os principais conceitos?",
                     "Liste as principais conclusões.",
                 ],
                 inputs=[msg],
-                label="Exemplos",
+                label="",
                 api_name=False,
             )
 
-            with gr.Accordion("Fontes recuperadas", open=True):
+            with gr.Accordion("Fontes", open=False):
                 sources_md = gr.Markdown("_Faça uma pergunta para ver as fontes citadas._")
 
     files.change(index_files, inputs=[files, state], outputs=[state, status], api_name=False)
