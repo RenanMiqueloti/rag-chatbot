@@ -53,7 +53,7 @@ graph LR
 
 - **LangGraph 0.4+** — orquestração do pipeline como grafo de estado
 - **Qdrant** — banco vetorial (in-memory por padrão, servidor via `QDRANT_URL`)
-- **sentence-transformers** — `paraphrase-multilingual-MiniLM-L12-v2` por padrão; override via `EMBEDDING_MODEL`
+- **sentence-transformers** — `intfloat/multilingual-e5-small` por padrão; override via `EMBEDDING_MODEL`
 - **rank-bm25** — retrieval por vocabulário exato
 - **Reciprocal Rank Fusion** — fusão BM25 + semântico sem tuning de pesos
 - **FlashRank** — cross-encoder leve para re-ranking local
@@ -146,7 +146,7 @@ Duas camadas independentes, configuráveis via env:
 Excedente retorna `429 Too Many Requests`.
 
 **Global diário** (`DailyRequestBudget`, circuit breaker):
-- `DAILY_REQUEST_CAP=500` (default; `0` desativa)
+- `DAILY_REQUEST_CAP=80` (default; `0` desativa)
 
 Protege a cota diária do provider quando muitos IPs distintos consomem em paralelo (que slowapi por IP não cobre). Reseta em meia-noite UTC. Excedente retorna `429` com mensagem indicando cota diária.
 
@@ -192,7 +192,7 @@ Env vars suportadas (defaults entre parênteses):
 |---|---|---|
 | `RATE_LIMIT_PER_MINUTE` | `10` | slowapi por IP |
 | `RATE_LIMIT_PER_HOUR` | `100` | slowapi por IP |
-| `DAILY_REQUEST_CAP` | `500` | Circuit breaker global; `0` desativa |
+| `DAILY_REQUEST_CAP` | `80` | Circuit breaker global; `0` desativa |
 | `MAX_QUERY_CHARS` | `2000` | Tamanho máximo da query (Pydantic) |
 
 ### Observabilidade

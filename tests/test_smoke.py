@@ -104,11 +104,11 @@ def test_reciprocal_rank_fusion_basic() -> None:
 
 
 def test_api_health_endpoint() -> None:
-    """Health endpoint responds even when the heavy pipeline has not initialized.
+    """Health endpoint sinaliza ``503 initializing`` enquanto a lifespan não rodou.
 
-    Uses ``TestClient`` without the ``with`` context manager so the FastAPI
-    lifespan (which builds the full RAG graph and connects to Qdrant) is
-    skipped — the goal is to validate routing, not infra.
+    ``TestClient`` sem ``with`` pula a lifespan (que indexa o corpus e
+    compila o grafo), então o endpoint deve recusar tráfego até o pipeline
+    estar pronto. Isso é o sinal que o HEALTHCHECK do Docker observa.
     """
     pytest.importorskip("fastapi")
     from fastapi.testclient import TestClient
@@ -117,9 +117,29 @@ def test_api_health_endpoint() -> None:
 
     client = TestClient(api.app)
     resp = client.get("/health")
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body.get("pipeline") == "initializing"
+
+
+def test_api_health_ready_when_graph_initialized(monkeypatch) -> None:
+    """Com graph carregado (stub), /health responde 200 com ``pipeline:ready``."""
+    pytest.importorskip("fastapi")
+    pytest.importorskip("langchain_qdrant")
+    from fastapi.testclient import TestClient
+
+    import api
+
+    class _StubGraph:
+        async def ainvoke(self, state):
+            return {"answer": "ok", "sources_struct": []}
+
+    monkeypatch.setattr(api, "_rag_graph", _StubGraph())
+    client = TestClient(api.app)
+    resp = client.get("/health")
     assert resp.status_code == 200
     body = resp.json()
-    assert body.get("status") == "ok"
+    assert body.get("pipeline") == "ready"
 
 
 def test_evals_dataset_loads() -> None:
@@ -313,6 +333,226 @@ def test_api_daily_budget_returns_429(monkeypatch) -> None:
     assert (
         "diária" in second.json()["detail"].lower() or "diaria" in second.json()["detail"].lower()
     )
+
+
+def test_is_broad_query_detects_pt_and_en_intent() -> None:
+    pytest.importorskip("langchain_qdrant")
+    import app
+
+    broad = [
+        "Faça um resumo do documento",
+        "Resuma o texto, por favor",
+        "Sumariza esse artigo",
+        "Liste os principais tópicos",
+        "Quais tópicos cobertos pelo documento?",
+        "Do que trata esse texto?",
+        "Visão geral do conteúdo",
+        "Give me a summary",
+        "Main topics of the document",
+    ]
+    for q in broad:
+        assert app.is_broad_query(q), f"esperado broad=True para: {q!r}"
+
+    narrow = [
+        "Qual o MTBF típico?",
+        "Quem é o autor citado na seção 2?",
+        "Em que ano o experimento foi realizado?",
+    ]
+    for q in narrow:
+        assert not app.is_broad_query(q), f"esperado broad=False para: {q!r}"
+
+
+def test_split_documents_propagates_md_headers_to_orphan_chunks() -> None:
+    pytest.importorskip("langchain_text_splitters")
+    from langchain_core.documents import Document
+
+    import app
+
+    big_section = "lorem ipsum " * 200  # > chunk_size 600
+    md = f"# Topo\n\n## Subseção A\n\n{big_section}\n\n## Subseção B\n\nTexto curto da B.\n"
+    docs = [Document(page_content=md, metadata={"source": "fake.md"})]
+    chunks = app._split_documents(docs, chunk_size=600, chunk_overlap=100)
+    assert len(chunks) > 1
+    orphan_chunks = [c for c in chunks if "lorem" in c.page_content]
+    assert orphan_chunks, "splitter deveria gerar sub-chunks da seção grande"
+    # ao menos um sub-chunk órfão deve receber o prefixo de header propagado
+    assert any("## Subseção A" in c.page_content for c in orphan_chunks)
+
+
+def test_split_documents_keeps_short_md_sections_intact() -> None:
+    pytest.importorskip("langchain_text_splitters")
+    from langchain_core.documents import Document
+
+    import app
+
+    md = "# Topo\n\n## Curta\n\nTexto pequeno.\n"
+    chunks = app._split_documents(
+        [Document(page_content=md, metadata={"source": "fake.md"})],
+        chunk_size=600,
+        chunk_overlap=100,
+    )
+    assert len(chunks) == 1
+    assert "Texto pequeno" in chunks[0].page_content
+
+
+def test_split_documents_handles_txt_with_recursive_only() -> None:
+    pytest.importorskip("langchain_text_splitters")
+    from langchain_core.documents import Document
+
+    import app
+
+    txt = "A. " * 500
+    chunks = app._split_documents(
+        [Document(page_content=txt, metadata={"source": "fake.txt"})],
+        chunk_size=300,
+        chunk_overlap=50,
+    )
+    assert len(chunks) > 1
+    assert all("A." in c.page_content for c in chunks)
+
+
+def test_retrieve_node_broad_query_returns_all_chunks() -> None:
+    pytest.importorskip("langchain_qdrant")
+    from langchain_core.documents import Document
+
+    import app
+
+    chunks = [Document(page_content=f"chunk {i}", metadata={"source": "x.txt"}) for i in range(7)]
+
+    class _StubRetriever:
+        def invoke(self, query):
+            return []
+
+    retrieve = app.make_retrieve_node(_StubRetriever(), _StubRetriever(), chunks)
+    out = retrieve({"query": "Faça um resumo do documento"})
+    assert out["broad"] is True
+    assert len(out["retrieved_docs"]) == len(chunks)
+
+
+def test_retrieve_node_narrow_query_uses_hybrid_fusion() -> None:
+    pytest.importorskip("langchain_qdrant")
+    from langchain_core.documents import Document
+
+    import app
+
+    chunks = [Document(page_content=f"chunk {i}") for i in range(3)]
+
+    class _StubSemantic:
+        def invoke(self, query):
+            return [chunks[0], chunks[1]]
+
+    class _StubKeyword:
+        def invoke(self, query):
+            return [chunks[2], chunks[0]]
+
+    retrieve = app.make_retrieve_node(_StubSemantic(), _StubKeyword(), chunks)
+    out = retrieve({"query": "Qual o MTBF típico do equipamento?"})
+    assert out["broad"] is False
+    fused_contents = [d.page_content for d in out["retrieved_docs"]]
+    # fusão deve incluir chunks de ambas as listas, sem duplicar
+    assert "chunk 0" in fused_contents
+    assert "chunk 1" in fused_contents
+    assert "chunk 2" in fused_contents
+    assert len(fused_contents) == len(set(fused_contents))
+    # chunk 0 aparece em ambas as listas → deve ficar acima dos que só aparecem em uma
+    assert fused_contents.index("chunk 0") < fused_contents.index("chunk 1")
+    assert fused_contents.index("chunk 0") < fused_contents.index("chunk 2")
+
+
+def test_coerce_content_to_str_handles_anthropic_blocks() -> None:
+    pytest.importorskip("langchain_qdrant")
+    import app
+
+    assert app._coerce_content_to_str("plain") == "plain"
+    assert app._coerce_content_to_str(None) == ""
+    blocks = [
+        {"type": "text", "text": "Olá, "},
+        {"type": "text", "text": "mundo."},
+    ]
+    assert app._coerce_content_to_str(blocks) == "Olá, mundo."
+    # blocos não-texto são ignorados em vez de quebrar
+    mixed = [{"type": "tool_use", "id": "x"}, {"type": "text", "text": "ok"}]
+    assert app._coerce_content_to_str(mixed) == "ok"
+    # strings cruas misturadas com blocks
+    assert app._coerce_content_to_str(["a", {"type": "text", "text": "b"}]) == "ab"
+
+    # blocks como objetos com atributo .text (pydantic models do langchain)
+    class _TextBlock:
+        def __init__(self, text: str):
+            self.text = text
+
+    assert app._coerce_content_to_str([_TextBlock("oi "), _TextBlock("mundo")]) == "oi mundo"
+
+
+def test_gradio_respond_handles_expired_graph_none(monkeypatch) -> None:
+    """Sessão expirou (graph virou None): respond deve mostrar SESSION_EXPIRED."""
+    import asyncio
+
+    pytest.importorskip("gradio")
+    pytest.importorskip("langchain_qdrant")
+    import gradio_app
+
+    state = {"graph": None, "queries": 0, "last_activity_at": None, "last_query_at": None}
+
+    async def consume() -> list:
+        out = []
+        async for chunk in gradio_app.respond("alguma pergunta", [], state):
+            out.append(chunk)
+        return out
+
+    results = asyncio.run(consume())
+    assert results
+    history, _, _ = results[-1]
+    assert any("expirou" in turn["content"].lower() for turn in history)
+
+
+def test_ip_rate_limiter_blocks_after_per_minute_cap() -> None:
+    pytest.importorskip("gradio")
+    pytest.importorskip("langchain_qdrant")
+    import gradio_app
+
+    limiter = gradio_app._IPRateLimiter(per_minute=3, per_hour=1000)
+    assert limiter.try_consume("1.1.1.1") is True
+    assert limiter.try_consume("1.1.1.1") is True
+    assert limiter.try_consume("1.1.1.1") is True
+    assert limiter.try_consume("1.1.1.1") is False
+    # IP diferente não é afetado
+    assert limiter.try_consume("2.2.2.2") is True
+
+
+def test_api_query_timeout_returns_504(monkeypatch) -> None:
+    """LLM travado vira 504 com mensagem clara em vez de pendurar a request."""
+    pytest.importorskip("fastapi")
+    pytest.importorskip("slowapi")
+    pytest.importorskip("langgraph")
+    pytest.importorskip("langchain_qdrant")
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "1000")
+    monkeypatch.setenv("RATE_LIMIT_PER_HOUR", "10000")
+    monkeypatch.setenv("DAILY_REQUEST_CAP", "0")
+    # timeout pequeno + sleep um pouco maior, pra manter o teste rápido
+    monkeypatch.setenv("LLM_REQUEST_TIMEOUT_SECONDS", "1")
+
+    import importlib
+
+    import api as api_module
+
+    api_module = importlib.reload(api_module)
+
+    class _SlowGraph:
+        async def ainvoke(self, state):
+            import asyncio
+
+            await asyncio.sleep(2)
+            return {"answer": "tarde demais", "sources_struct": []}
+
+    api_module._rag_graph = _SlowGraph()
+
+    client = TestClient(api_module.app)
+    resp = client.post("/query", json={"query": "ola"})
+    assert resp.status_code == 504
+    assert "tempo" in resp.json()["detail"].lower()
 
 
 def test_api_upstream_429_returns_friendly_message(monkeypatch) -> None:
