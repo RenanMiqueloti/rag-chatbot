@@ -20,6 +20,7 @@ Rate limiting (todos opcionais via env):
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -36,6 +37,12 @@ from rate_limits import DAILY_CAP_MSG, RATE_LIMIT_MSG, DailyRequestBudget, is_ra
 
 load_dotenv()
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+)
+logger = logging.getLogger(__name__)
+
 
 def _int_env(name: str, default: int) -> int:
     raw = os.getenv(name, "").strip()
@@ -51,6 +58,9 @@ RATE_LIMIT_PER_MINUTE = _int_env("RATE_LIMIT_PER_MINUTE", 10)
 RATE_LIMIT_PER_HOUR = _int_env("RATE_LIMIT_PER_HOUR", 100)
 DAILY_REQUEST_CAP = _int_env("DAILY_REQUEST_CAP", 80)
 MAX_QUERY_CHARS = _int_env("MAX_QUERY_CHARS", 2000)
+LLM_REQUEST_TIMEOUT_SECONDS = _int_env("LLM_REQUEST_TIMEOUT_SECONDS", 60)
+
+TIMEOUT_MSG = "Tempo limite excedido aguardando o provider LLM. Tente de novo."
 
 _LIMITS = [f"{RATE_LIMIT_PER_MINUTE}/minute", f"{RATE_LIMIT_PER_HOUR}/hour"]
 limiter = Limiter(key_func=get_remote_address, default_limits=_LIMITS)
@@ -140,14 +150,16 @@ class QueryResponse(BaseModel):
 
 
 @app.get("/health")
-async def health() -> dict:
-    return {
-        "status": "ok",
+async def health() -> JSONResponse:
+    body = {
+        "status": "ok" if _rag_graph else "initializing",
         "pipeline": "ready" if _rag_graph else "initializing",
         "provider": os.getenv("LLM_PROVIDER", "openai"),
         "tracing": os.getenv("LANGCHAIN_TRACING_V2", "false"),
         "daily_remaining": budget.remaining(),
     }
+    status_code = 200 if _rag_graph else 503
+    return JSONResponse(status_code=status_code, content=body)
 
 
 def _initial_state(query: str) -> dict:
@@ -167,10 +179,19 @@ async def query_endpoint(request: Request, body: QueryRequest) -> QueryResponse:
     rag = _get_graph()
     _enforce_daily_budget()
     try:
-        result = await rag.ainvoke(_initial_state(body.query))
+        coro = rag.ainvoke(_initial_state(body.query))
+        if LLM_REQUEST_TIMEOUT_SECONDS > 0:
+            result = await asyncio.wait_for(coro, timeout=LLM_REQUEST_TIMEOUT_SECONDS)
+        else:
+            result = await coro
+    except TimeoutError as exc:
+        logger.warning("query timeout after %ss", LLM_REQUEST_TIMEOUT_SECONDS)
+        raise HTTPException(status_code=504, detail=TIMEOUT_MSG) from exc
     except Exception as exc:
         if is_rate_limit(exc):
+            logger.warning("upstream rate limit on /query: %s", exc)
             raise HTTPException(status_code=429, detail=RATE_LIMIT_MSG) from exc
+        logger.exception("query failed")
         raise
     sources = [Source(**s) for s in result.get("sources_struct", [])]
     return QueryResponse(answer=result["answer"], sources=sources)
@@ -179,7 +200,12 @@ async def query_endpoint(request: Request, body: QueryRequest) -> QueryResponse:
 @app.post("/stream")
 @limiter.limit(f"{RATE_LIMIT_PER_MINUTE}/minute")
 async def stream_endpoint(request: Request, body: QueryRequest) -> StreamingResponse:
-    """Streaming token-a-token via LangGraph astream_events."""
+    """Streaming token-a-token via LangGraph astream_events.
+
+    Sem timeout global no iterator — o cancelamento natural por desconexão do
+    cliente é o que limita streams penduradas. ``LLM_REQUEST_TIMEOUT_SECONDS``
+    só se aplica a ``/query`` por causa disso.
+    """
     rag = _get_graph()
     _enforce_daily_budget()
 
@@ -194,8 +220,10 @@ async def stream_endpoint(request: Request, body: QueryRequest) -> StreamingResp
                     yield token
         except Exception as exc:
             if is_rate_limit(exc):
+                logger.warning("upstream rate limit on /stream: %s", exc)
                 yield f"\n[{RATE_LIMIT_MSG}]"
                 return
+            logger.exception("stream failed")
             raise
 
     return StreamingResponse(token_generator(), media_type="text/plain")

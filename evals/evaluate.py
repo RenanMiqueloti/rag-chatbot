@@ -105,10 +105,11 @@ def run_evals(data_path: str = "data/sample_docs.txt") -> list[dict]:
     Returns:
         Lista de resultados com question, answer e scores.
     """
-    from app import build_rag_graph  # lazy import — evita indexar na importação
+    from app import build_rag_graph, load_documents_from_files
 
     dataset = load_dataset()
-    rag = build_rag_graph(data_path)
+    documents = load_documents_from_files([data_path])
+    rag = build_rag_graph(documents)
     results = []
 
     print(f"▶ Rodando {len(dataset)} evals...\n")
@@ -118,6 +119,7 @@ def run_evals(data_path: str = "data/sample_docs.txt") -> list[dict]:
             "query": sample["question"],
             "retrieved_docs": [],
             "reranked_docs": [],
+            "sources_struct": [],
             "answer": "",
         }
         result = rag.invoke(initial_state)

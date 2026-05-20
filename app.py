@@ -18,6 +18,7 @@ Provider LLM: defina LLM_PROVIDER=anthropic|groq (padrão: openai).
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import re
@@ -93,6 +94,29 @@ def extract_citation_ids(text: str) -> list[int]:
         if n not in seen:
             seen.append(n)
     return seen
+
+
+def _coerce_content_to_str(content: object) -> str:
+    """Normaliza o ``response.content`` do LLM pra string.
+
+    Claude (langchain-anthropic) pode devolver ``list[ContentBlock]`` em vez
+    de string — cada bloco pode ser dict (``{"type": "text", "text": "..."}``)
+    ou objeto pydantic com atributo ``.text``, dependendo da versão. Sem
+    normalizar, Pydantic ``QueryResponse.answer: str`` levanta ValidationError.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+                continue
+            text = block.get("text") if isinstance(block, dict) else getattr(block, "text", None)
+            if isinstance(text, str):
+                parts.append(text)
+        return "".join(parts)
+    return str(content) if content is not None else ""
 
 
 # ── Document loading ──────────────────────────────────────────────────────
@@ -344,6 +368,19 @@ DEFAULT_RERANKER_MODEL = "ms-marco-MiniLM-L-12-v2"
 RERANK_CONFIDENCE_THRESHOLD = 0.5
 
 
+@functools.lru_cache(maxsize=4)
+def _get_ranker(model_name: str, cache_dir: str):
+    """Cacheia o ``flashrank.Ranker`` por (model, cache_dir).
+
+    Instanciar o Ranker lê pesos do disco. Sem cache, cada query paga esse
+    custo; com cache, só a primeira chamada paga (e até 4 combinações
+    ficam em memória, suficiente pra alternar entre modelos sem thrashing).
+    """
+    from flashrank import Ranker  # type: ignore[import]
+
+    return Ranker(model_name=model_name, cache_dir=cache_dir)
+
+
 BROAD_QUERY_RE = re.compile(
     r"\b(resumo|resuma|sumariza[r]?|sumarize|sintetiz[ae]r?|"
     r"liste|listar|lista\s+(os|as|todos|todas)|"
@@ -384,11 +421,11 @@ def rerank(query: str, docs: list[Document], top_n: int = 3) -> list[tuple[Docum
     fusion) com scores 0.0, evitando que o rerank degradado tire chunks bons do topo.
     """
     try:
-        from flashrank import Ranker, RerankRequest  # type: ignore[import]
+        from flashrank import RerankRequest  # type: ignore[import]
 
         cache_dir = os.getenv("FLASHRANK_CACHE_DIR", "/tmp")
         reranker_model = os.getenv("RERANKER_MODEL", DEFAULT_RERANKER_MODEL)
-        ranker = Ranker(model_name=reranker_model, cache_dir=cache_dir)
+        ranker = _get_ranker(reranker_model, cache_dir)
         passages = [{"id": i, "text": d.page_content} for i, d in enumerate(docs)]
         request = RerankRequest(query=query, passages=passages)
         results = ranker.rerank(request)
@@ -534,17 +571,16 @@ def make_generate_node(llm: BaseChatModel):
         )
         response = await llm.ainvoke([HumanMessage(content=prompt)])
         dt_ms = (time.perf_counter() - t0) * 1000
-        answer = response.content
+        answer = _coerce_content_to_str(response.content)
         logger.info(
             "generate query=%r docs=%d answer_chars=%d latency_ms=%.1f",
             query[:80],
             len(state["reranked_docs"]),
-            len(answer) if isinstance(answer, str) else 0,
+            len(answer),
             dt_ms,
         )
-        if isinstance(answer, str):
-            preview = " ".join(answer.split())[:500]
-            logger.info("answer :: %s", preview)
+        preview = " ".join(answer.split())[:500]
+        logger.info("answer :: %s", preview)
         return {**state, "answer": answer}
 
     return generate

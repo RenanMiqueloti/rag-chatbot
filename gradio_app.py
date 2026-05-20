@@ -310,9 +310,12 @@ async def respond(message: str, history: list[dict], state):
 
     user_turn = {"role": "user", "content": message}
 
-    if state is None:
+    if state is None or state.get("graph") is None:
+        # graph=None ocorre quando uma sessão expirou: o handler zera o grafo,
+        # devolve SESSION_EXPIRED e o usuário só recupera reindexando.
         history.append(user_turn)
-        history.append({"role": "assistant", "content": NO_STATE_MSG})
+        msg_text = SESSION_EXPIRED_MSG if state is not None else NO_STATE_MSG
+        history.append({"role": "assistant", "content": msg_text})
         yield history, "", gr.update()
         return
 
@@ -502,7 +505,14 @@ class _IPRateLimiter:
 
 
 def _client_ip(request) -> str:
-    """IP do cliente. Prioriza X-Forwarded-For (HF Spaces, proxy reverso)."""
+    """IP do cliente. Prioriza X-Forwarded-For (HF Spaces, proxy reverso).
+
+    Atenção: confiar em ``X-Forwarded-For`` só faz sentido atrás de um proxy
+    controlado (HF Spaces, Cloudflare, Nginx) que sobrescreve o header com o
+    IP real do cliente. Em deploy direto à internet, sem proxy, um atacante
+    falsifica o header e bypassa o rate limit — nesse cenário, remova o ramo
+    de XFF e use só ``request.client.host``.
+    """
     fwd = request.headers.get("x-forwarded-for") or request.headers.get("x-real-ip")
     if fwd:
         return fwd.split(",")[0].strip()
