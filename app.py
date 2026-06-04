@@ -54,7 +54,7 @@ def build_llm(provider: str | None = None) -> BaseChatModel:
 
     Padrão: openai.
     """
-    provider = (provider or os.getenv("LLM_PROVIDER", "openai")).lower()
+    provider = (provider or os.getenv("LLM_PROVIDER", "openai")).lower()  # type: ignore[union-attr]
 
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
@@ -478,7 +478,7 @@ def make_retrieve_node(
                 dt_ms,
             )
             return {**state, "retrieved_docs": picked, "broad": True}
-        semantic = semantic_retriever.invoke(query)  # type: ignore[union-attr]
+        semantic = semantic_retriever.invoke(query)  # type: ignore[attr-defined]
         keyword = bm25_retriever.invoke(query)
         fused = reciprocal_rank_fusion([semantic, keyword])
         dt_ms = (time.perf_counter() - t0) * 1000

@@ -63,7 +63,7 @@ LLM_REQUEST_TIMEOUT_SECONDS = _int_env("LLM_REQUEST_TIMEOUT_SECONDS", 60)
 TIMEOUT_MSG = "Tempo limite excedido aguardando o provider LLM. Tente de novo."
 
 _LIMITS = [f"{RATE_LIMIT_PER_MINUTE}/minute", f"{RATE_LIMIT_PER_HOUR}/hour"]
-limiter = Limiter(key_func=get_remote_address, default_limits=_LIMITS)
+limiter = Limiter(key_func=get_remote_address, default_limits=_LIMITS)  # type: ignore[arg-type]
 budget = DailyRequestBudget(cap=DAILY_REQUEST_CAP)
 
 # Instanciado em startup para evitar cold-start no primeiro request

@@ -420,18 +420,24 @@ with gr.Blocks(title="rag-chatbot", analytics_enabled=False, fill_width=False) a
                 ],
                 inputs=[msg],
                 label="",
-                api_name=False,
+                api_name=False,  # type: ignore[arg-type]
             )
 
             with gr.Accordion("Fontes", open=False):
                 sources_md = gr.Markdown("_Faça uma pergunta para ver as fontes citadas._")
 
-    files.change(index_files, inputs=[files, state], outputs=[state, status], api_name=False)
+    files.change(index_files, inputs=[files, state], outputs=[state, status], api_name=False)  # type: ignore[arg-type]
     send.click(
-        respond, inputs=[msg, chatbot, state], outputs=[chatbot, msg, sources_md], api_name=False
+        respond,
+        inputs=[msg, chatbot, state],
+        outputs=[chatbot, msg, sources_md],
+        api_name=False,  # type: ignore[arg-type]
     )
     msg.submit(
-        respond, inputs=[msg, chatbot, state], outputs=[chatbot, msg, sources_md], api_name=False
+        respond,
+        inputs=[msg, chatbot, state],
+        outputs=[chatbot, msg, sources_md],
+        api_name=False,  # type: ignore[arg-type]
     )
 
 
