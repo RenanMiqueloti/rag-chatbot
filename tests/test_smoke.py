@@ -423,7 +423,7 @@ def test_retrieve_node_broad_query_returns_all_chunks() -> None:
         def invoke(self, query):
             return []
 
-    retrieve = app.make_retrieve_node(_StubRetriever(), _StubRetriever(), chunks)
+    retrieve = app.make_retrieve_node(_StubRetriever(), _StubRetriever(), chunks)  # type: ignore[arg-type]
     out = retrieve({"query": "Faça um resumo do documento"})
     assert out["broad"] is True
     assert len(out["retrieved_docs"]) == len(chunks)
@@ -445,7 +445,7 @@ def test_retrieve_node_narrow_query_uses_hybrid_fusion() -> None:
         def invoke(self, query):
             return [chunks[2], chunks[0]]
 
-    retrieve = app.make_retrieve_node(_StubSemantic(), _StubKeyword(), chunks)
+    retrieve = app.make_retrieve_node(_StubSemantic(), _StubKeyword(), chunks)  # type: ignore[arg-type]
     out = retrieve({"query": "Qual o MTBF típico do equipamento?"})
     assert out["broad"] is False
     fused_contents = [d.page_content for d in out["retrieved_docs"]]

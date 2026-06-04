@@ -83,7 +83,7 @@ Respond with valid JSON only:
 
     response = llm.invoke(prompt)
     try:
-        return json.loads(response.content)
+        return json.loads(response.content)  # type: ignore[arg-type]
     except json.JSONDecodeError:
         return {
             "relevance": 0,
