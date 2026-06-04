@@ -29,7 +29,7 @@ pypdf>=4.0
 flashrank>=0.2.9
 
 # API REST com streaming
-fastapi>=0.115.0
+fastapi>=0.136.3
 uvicorn>=0.30.0
 slowapi>=0.1.9
 
