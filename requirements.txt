@@ -1,7 +1,7 @@
 # LangChain — núcleo e integrações (v0.3+ LCEL)
 langchain>=0.3.20
 langchain-core>=0.3.0
-langchain-openai>=0.3.0
+langchain-openai>=1.2.2
 langchain-anthropic>=0.3.0
 langchain-groq>=0.2.0
 langchain-huggingface>=0.1.0
