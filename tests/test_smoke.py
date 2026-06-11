@@ -68,14 +68,16 @@ def test_load_documents_from_files_txt(tmp_path: Path) -> None:
     assert "Texto de exemplo" in docs[0].page_content
 
 
-def test_build_retrievers_accepts_documents() -> None:
+def test_build_retrievers_accepts_documents(monkeypatch: pytest.MonkeyPatch) -> None:
     pytest.importorskip("langgraph")
     pytest.importorskip("langchain_qdrant")
-    pytest.importorskip("sentence_transformers")
-    pytest.importorskip("langchain_huggingface")
     from langchain_core.documents import Document
+    from langchain_core.embeddings import DeterministicFakeEmbedding
 
     import app
+
+    # embeddings fake: evita baixar o modelo do HF Hub dentro do teste
+    monkeypatch.setattr(app, "_build_embeddings", lambda _: DeterministicFakeEmbedding(size=32))
 
     documents = [
         Document(page_content="A LangChain é um framework para LLMs."),
