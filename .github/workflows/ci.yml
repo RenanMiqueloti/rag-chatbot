@@ -49,3 +49,4 @@ jobs:
         env:
           OPENAI_API_KEY: dummy
           ANTHROPIC_API_KEY: dummy
+          HF_HUB_OFFLINE: "1"
