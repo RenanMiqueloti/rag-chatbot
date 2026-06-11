@@ -7,7 +7,7 @@ langchain-groq>=0.2.0
 langchain-huggingface>=0.1.0
 langchain-community>=0.3.20
 langchain-text-splitters>=1.1.2
-langchain-qdrant>=0.2.0
+langchain-qdrant>=1.1.0
 
 # LangGraph — orquestração do pipeline RAG
 langgraph>=0.4.0
