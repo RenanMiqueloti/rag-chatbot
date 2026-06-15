@@ -208,6 +208,7 @@ async def stream_endpoint(request: Request, body: QueryRequest) -> StreamingResp
     """
     rag = _get_graph()
     _enforce_daily_budget()
+    from app import _coerce_content_to_str
 
     async def token_generator():
         try:
@@ -215,7 +216,10 @@ async def stream_endpoint(request: Request, body: QueryRequest) -> StreamingResp
                 if ev["event"] != "on_chat_model_stream":
                     continue
                 chunk = ev["data"].get("chunk")
-                token = getattr(chunk, "content", "") if chunk is not None else ""
+                content = getattr(chunk, "content", "") if chunk is not None else ""
+                # Claude streama content como list[ContentBlock]; sem normalizar,
+                # StreamingResponse quebra ao chamar .encode() numa lista.
+                token = _coerce_content_to_str(content)
                 if token:
                     yield token
         except Exception as exc:
