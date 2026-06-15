@@ -585,3 +585,36 @@ def test_api_upstream_429_returns_friendly_message(monkeypatch) -> None:
     resp = client.post("/query", json={"query": "ola"})
     assert resp.status_code == 429
     assert "provider" in resp.json()["detail"].lower()
+
+
+def test_stream_coerces_anthropic_content_blocks(monkeypatch) -> None:
+    """Claude streama content como list[ContentBlock].
+
+    Sem normalizar, StreamingResponse quebra ao chamar ``.encode()`` numa
+    lista e o cliente recebe corpo vazio. O endpoint deve devolver o texto
+    concatenado dos blocks.
+    """
+    pytest.importorskip("fastapi")
+    pytest.importorskip("slowapi")
+    pytest.importorskip("langchain_qdrant")
+    from fastapi.testclient import TestClient
+
+    import api
+
+    class _Chunk:
+        def __init__(self, content):
+            self.content = content
+
+    class _StubGraph:
+        async def astream_events(self, state, version="v2"):
+            for piece in ["Olá ", "mundo", "!"]:
+                yield {
+                    "event": "on_chat_model_stream",
+                    "data": {"chunk": _Chunk([{"type": "text", "text": piece, "index": 0}])},
+                }
+
+    monkeypatch.setattr(api, "_rag_graph", _StubGraph())
+    client = TestClient(api.app)
+    resp = client.post("/stream", json={"query": "oi"})
+    assert resp.status_code == 200
+    assert resp.text == "Olá mundo!"
