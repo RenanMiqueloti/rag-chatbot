@@ -426,14 +426,16 @@ with gr.Blocks(title="rag-chatbot", analytics_enabled=False, fill_width=False) a
             with gr.Accordion("Fontes", open=False):
                 sources_md = gr.Markdown("_Faça uma pergunta para ver as fontes citadas._")
 
-    files.change(index_files, inputs=[files, state], outputs=[state, status], api_name=False)  # type: ignore[arg-type]
-    send.click(
+    # gradio >= 6.15 tipa os event listeners via stub que o mypy não resolve
+    # nos componentes — daí o attr-defined junto do arg-type de api_name.
+    files.change(index_files, inputs=[files, state], outputs=[state, status], api_name=False)  # type: ignore[arg-type, attr-defined]
+    send.click(  # type: ignore[attr-defined]
         respond,
         inputs=[msg, chatbot, state],
         outputs=[chatbot, msg, sources_md],
         api_name=False,  # type: ignore[arg-type]
     )
-    msg.submit(
+    msg.submit(  # type: ignore[attr-defined]
         respond,
         inputs=[msg, chatbot, state],
         outputs=[chatbot, msg, sources_md],
