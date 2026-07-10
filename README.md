@@ -16,7 +16,7 @@ short_description: Demo de RAG com upload de documentos e citações
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.12-blue.svg)
 
-Pipeline RAG em LangGraph: retrieval híbrido (BM25 + embeddings multilíngues fundidos via RRF), re-ranking com cross-encoder e confidence threshold, geração com citações `[N]` ancoradas em documento e página. Acompanha API REST (FastAPI) com rate limiting por IP + circuit breaker diário, e demo Gradio empacotada pra Hugging Face Spaces. Suporta OpenAI (gpt-4o-mini), Anthropic (Claude 3.5 Haiku) e Groq (Llama 3.3 70B).
+Pipeline RAG em LangGraph: retrieval híbrido (BM25 + embeddings multilíngues fundidos via RRF), re-ranking com cross-encoder e confidence threshold, geração com citações `[N]` ancoradas em documento e página. Acompanha API REST (FastAPI) com rate limiting por IP + circuit breaker diário, e demo Gradio empacotada pra Hugging Face Spaces. Suporta OpenAI (gpt-4o-mini), Anthropic (Claude Haiku 4.5) e Groq (Llama 3.3 70B).
 
 > Demo local autocontido — `QdrantClient(":memory:")` por padrão. Aponte `QDRANT_URL` pra um servidor dedicado quando quiser persistência.
 
@@ -152,11 +152,11 @@ Não defende contra atacante motivado (proxies residenciais, IPv6, restart reset
 
 Configure `LLM_PROVIDER` no `.env`:
 
-| Provider | Modelo | Env var necessária |
-|---|---|---|
-| `openai` (padrão) | gpt-4o-mini | `OPENAI_API_KEY` |
-| `anthropic` | claude-3-5-haiku-20241022 | `ANTHROPIC_API_KEY` |
-| `groq` | llama-3.3-70b-versatile | `GROQ_API_KEY` (free tier, rate-limited) |
+| Provider | Modelo (default) | Override | Env var necessária |
+|---|---|---|---|
+| `openai` (padrão) | gpt-4o-mini | `OPENAI_MODEL` | `OPENAI_API_KEY` |
+| `anthropic` | claude-haiku-4-5 | `ANTHROPIC_MODEL` | `ANTHROPIC_API_KEY` |
+| `groq` | llama-3.3-70b-versatile | `GROQ_MODEL` | `GROQ_API_KEY` (free tier, rate-limited) |
 
 ---
 

@@ -47,10 +47,10 @@ CITATION_RE = re.compile(r"\[(\d+)\]")
 def build_llm(provider: str | None = None) -> BaseChatModel:
     """Retorna o LLM configurado pelo env var LLM_PROVIDER.
 
-    Providers suportados:
-      - openai    → gpt-4o-mini  (requer OPENAI_API_KEY)
-      - anthropic → claude-3-5-haiku-20241022  (requer ANTHROPIC_API_KEY)
-      - groq      → llama-3.3-70b-versatile  (requer GROQ_API_KEY; free tier rate-limited)
+    Providers suportados (default; override via env var de modelo):
+      - openai    → gpt-4o-mini  (OPENAI_MODEL; requer OPENAI_API_KEY)
+      - anthropic → claude-haiku-4-5  (ANTHROPIC_MODEL; requer ANTHROPIC_API_KEY)
+      - groq      → llama-3.3-70b-versatile  (GROQ_MODEL; requer GROQ_API_KEY; free tier rate-limited)
 
     Padrão: openai.
     """
@@ -60,18 +60,18 @@ def build_llm(provider: str | None = None) -> BaseChatModel:
         from langchain_anthropic import ChatAnthropic
 
         return ChatAnthropic(
-            model="claude-3-5-haiku-20241022",  # type: ignore[call-arg]
+            model=os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5"),  # type: ignore[call-arg]
             temperature=0.2,
         )
 
     if provider == "groq":
         from langchain_groq import ChatGroq
 
-        return ChatGroq(model="llama-3.3-70b-versatile", temperature=0.2)
+        return ChatGroq(model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"), temperature=0.2)
 
     from langchain_openai import ChatOpenAI
 
-    return ChatOpenAI(model="gpt-4o-mini", temperature=0.2)
+    return ChatOpenAI(model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"), temperature=0.2)
 
 
 # ── State ─────────────────────────────────────────────────────────────────

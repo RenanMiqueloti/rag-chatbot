@@ -1,0 +1,36 @@
+name: Refresh Tor exit snapshot
+
+# Mantém tor_exit_nodes.txt (fallback offline do _fetch_tor_exit_nodes)
+# razoavelmente fresco — a lista pública muda o tempo todo e um snapshot
+# de meses atrás bloqueia IPs que já não são exits.
+
+on:
+  schedule:
+    - cron: "0 6 1 * *" # mensal, dia 1 às 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Fetch current exit list
+        run: |
+          curl -fsSL --retry 3 https://check.torproject.org/torbulkexitlist -o /tmp/exits.txt
+          # sanity check: a lista real tem >1000 entradas; menos que 500
+          # indica resposta truncada/errada — melhor manter o snapshot atual
+          [ "$(wc -l < /tmp/exits.txt)" -ge 500 ] || { echo "lista suspeita ($(wc -l < /tmp/exits.txt) linhas), abortando"; exit 1; }
+          mv /tmp/exits.txt tor_exit_nodes.txt
+
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tor_exit_nodes.txt
+          git diff --cached --quiet && { echo "sem mudanças"; exit 0; }
+          git commit -m "chore: refresh Tor exit-node snapshot"
+          git push
