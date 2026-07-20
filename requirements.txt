@@ -37,7 +37,7 @@ slowapi>=0.1.9
 gradio>=6.0,<7.0
 
 # Observabilidade — LangSmith (integração nativa LangGraph)
-langsmith>=0.1.0
+langsmith>=0.10.7
 # Langfuse (alternativa open-source self-hostable)
 # langfuse>=2.0.0
 
