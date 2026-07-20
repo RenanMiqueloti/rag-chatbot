@@ -45,4 +45,4 @@ langsmith>=0.1.0
 tiktoken>=0.13.0
 python-dotenv>=1.1.0
 openai>=2.41.0
-anthropic>=0.40.0
+anthropic>=0.117.0
