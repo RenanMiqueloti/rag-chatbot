@@ -23,7 +23,7 @@ sentence-transformers>=3.0.0
 rank-bm25>=0.2.2
 
 # PDF loader (PyPDFLoader — pypdf é BSD; pymupdf seria AGPL)
-pypdf>=4.0
+pypdf>=6.14.2
 
 # Re-ranking — cross-encoder via FlashRank
 flashrank>=0.2.9
